@@ -228,7 +228,7 @@ class UserDatabase:
         progress = {}
         for section in ['vocabulary', 'grammar', 'conversation', 'assessment']:
             progress[section] = {}
-            for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
+            for level in ['beginner', 'amatثur', 'intermediate', 'advanced']:
                 progress[section][level] = self.get_section_progress(user_id, section, level)
         return progress
 
@@ -255,13 +255,13 @@ class UserDatabase:
         return result[0] if result else 0
 
     def check_and_upgrade_level(self, user_id):
-        """If all 4 sections for current level are >=80, upgrade user to next level and return True if upgraded."""
+        """If all 3 sections for current level are >=80, upgrade user to next level and return True if upgraded."""
         current_level = self.get_user_level(user_id)
-        levels = ['beginner', 'amatur', 'intermediate', 'advanced']
+        levels = ['beginner', 'amateur', 'intermediate', 'advanced']
         if current_level == 'advanced':
             return False
         idx = levels.index(current_level)
-        for section in ['vocabulary', 'grammar', 'conversation', 'assessment']:
+        for section in ['vocabulary', 'grammar', 'conversation']:
             if self.get_section_progress(user_id, section, current_level) < 80:
                 return False
         # Upgrade
@@ -317,7 +317,7 @@ class UserDatabase:
                 elif score >= 60:
                     level = "intermediate"
                 elif score >= 40:
-                    level = "amatur"
+                    level = "amatثur"
                 return level, score
             else:
                 return None, None

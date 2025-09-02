@@ -52,7 +52,7 @@ user_states = {}
 # Persian names for levels (update everywhere used)
 levels_persian = {
     "beginner": "مبتدی",
-    "amatur": "آماتور",
+    "amateur": "آماتور",
     "intermediate": "متوسط",
     "advanced": "پیشرفته"
 }
@@ -143,8 +143,8 @@ async def assess_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['assessment_questions'] = assessment_questions
     context.user_data['current_question'] = 0
     context.user_data['correct_answers'] = 0
-    context.user_data['correct_by_level'] = {"beginner": 0, "amatur": 0, "intermediate": 0, "advanced": 0}
-    context.user_data['total_by_level'] = {"beginner": 0, "amatur": 0, "intermediate": 0, "advanced": 0}
+    context.user_data['correct_by_level'] = {"beginner": 0, "amateur": 0, "intermediate": 0, "advanced": 0}
+    context.user_data['total_by_level'] = {"beginner": 0, "amateur": 0, "intermediate": 0, "advanced": 0}
 
 
     await update.message.reply_text(f"شروع آزمون تعیین سطح ({len(assessment_questions)} سوال)...")
@@ -211,7 +211,7 @@ async def send_assessment_question(message: Message, context: ContextTypes.DEFAU
         elif percentage >= 60:
              level = "intermediate"
         elif percentage >= 40:
-            level = "amatur"
+            level = "amateur"
 
         # --- Add Logging Here ---
         logger.info(f"Assessment complete for user {user_id}. Calculated score: {percentage:.1f}%. Determined level: {level}.")
@@ -963,14 +963,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             topic_id = lesson_info.get('topic_id')
             level = lesson_info.get('level')
             
+            
             # Check if all 5 exercises are completed
             if exercises_completed >= 5:
                 # Calculate average score and mark lesson as completed
                 avg_score = total_score / 5
                 content_manager.mark_grammar_lesson_completed(user_id, level, topic_id, avg_score)
                 
-                # Update progress
-                db.add_section_progress(user_id, 'grammar', level, avg_score)
+                # --- New Progress Calculation Logic ---
+                # Get total number of grammar lessons for the level
+                total_lessons = content_manager.get_total_grammar_count(level)
+                
+                if total_lessons > 0:
+                    # Calculate the progress increment for completing one lesson
+                    progress_increment = (1 / total_lessons) * 100
+                    
+                    # Add the calculated increment to the user's grammar progress
+                    db.add_section_progress(user_id, 'grammar', level, progress_increment)
+                # --- End of New Logic ---
                 
                 # Check for level up
                 if db.check_and_upgrade_level(user_id):
@@ -1066,12 +1076,21 @@ Focus on the specific grammar rule they just learned."""
                 context.user_data['conversation_scores'] = []
             if 'conversation_ai_replies' not in context.user_data:
                 context.user_data['conversation_ai_replies'] = 0
+            
             # Limit to 4 user replies
             if len(context.user_data['conversation_history']) >= 4:
                 # End session, calculate average score
                 scores = context.user_data['conversation_scores']
                 avg_score = int(sum(scores) / len(scores)) if scores else 0
-                db.add_section_progress(user_id, 'conversation', level, avg_score)
+                
+                # --- New Progress Calculation Logic ---
+                total_topics = content_manager.get_total_conversation_count(level)
+                if total_topics > 0:
+                    # Calculate the progress increment for completing one conversation topic
+                    progress_increment = (1 / total_topics) * 100
+                    db.add_section_progress(user_id, 'conversation', level, progress_increment)
+                # --- End of New Logic ---
+                
                 if db.check_and_upgrade_level(user_id):
                     await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
                 await update.message.reply_text(f"✅ مکالمه به پایان رسید!\nمیانگین امتیاز شما: {avg_score}/100\nبرای شروع مکالمه جدید، دوباره دکمه تمرین مکالمه را بزنید.")
@@ -1166,8 +1185,8 @@ async def set_level_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # If argument provided, set level
     new_level = context.args[0].lower()
-    if new_level not in ["beginner", "amatur", "intermediate", "advanced"]:
-        await update.message.reply_text("Invalid level. Use 'beginner', 'amatur', 'intermediate', or 'advanced'.")
+    if new_level not in ["beginner", "amateur", "intermediate", "advanced"]:
+        await update.message.reply_text("Invalid level. Use 'beginner', 'amateur', 'intermediate', or 'advanced'.")
         return
     
     # Update level
@@ -1218,7 +1237,7 @@ async def debug_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Original level before tests: {original_level}")
             
         # Test all levels
-        for test_level in ["beginner", "amatur", "intermediate", "advanced"]:
+        for test_level in ["beginner", "amateur", "intermediate", "advanced"]:
             # Try regular update
             await update.message.reply_text(f"Testing regular update to {test_level}...")
             success = db.update_user_level(user_id, test_level)
@@ -1432,7 +1451,7 @@ async def create_test_assessment_command(update: Update, context: ContextTypes.D
     elif score >= 60:
         level = "intermediate"
     elif score >= 40:
-        level = "amatur"
+        level = "amateur"
     
     await update.message.reply_text(f"در حال ایجاد یک نتیجه آزمون آزمایشی با نمره {score}% (سطح {level})...")
     

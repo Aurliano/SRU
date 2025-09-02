@@ -160,7 +160,7 @@ class ContentManager:
             # Find the first uncompleted lesson
             for lesson in all_lessons:
                 if lesson['topic_id'] not in completed_lessons:
-        return lesson
+                    return lesson
             
             # If all lessons are completed, return the first one (cycle back)
             return all_lessons[0] if all_lessons else None
@@ -259,53 +259,73 @@ class ContentManager:
             self.user_conn.commit()
         except Exception as e:
             print(f"Error resetting grammar seen for user {user_id}: {e}")
-    
+
     def get_mixed_assessment_questions(self, total_count=20):
         """Get a mix of assessment questions across different levels and types."""
         try:
             questions = []
-            # 5 questions from each level (25% for each level)
-            per_level = total_count // 4
-            levels = ['beginner', 'amatur', 'intermediate', 'advanced']
+            levels = ['beginner', 'amateur', 'intermediate', 'advanced']
             
-            for lvl in levels:
-                self.cursor.execute(
-                    "SELECT question, options, answer, level FROM assessment_questions WHERE level = ? ORDER BY id LIMIT ?",
-                    (lvl, per_level)
-                )
-                level_questions = []
-                for row in self.cursor.fetchall():
-                    level_questions.append({
-                        'question': row[0],
-                        'options': row[1].split('|'),
-                        'answer': row[2],
-                        'level': row[3]
-                    })
+            # Fetch all questions from the database first
+            self.cursor.execute(
+                "SELECT question, options, answer, level FROM assessment_questions ORDER BY id"
+            )
+            all_db_questions = []
+            for row in self.cursor.fetchall():
+                all_db_questions.append({
+                    'question': row[0],
+                    'options': row[1].split('|'),
+                    'answer': row[2],
+                    'level': row[3]
+                })
+
+            # If no questions in DB, use only fallback
+            if not all_db_questions:
+                all_db_questions = self.get_fallback_assessment_questions(200) # Get a large set from fallback
+
+            # Shuffle all available questions (from DB or fallback) and pick unique ones
+            random.shuffle(all_db_questions)
+            
+            selected_questions = []
+            seen_question_texts = set()
+            
+            # Distribute questions by level if possible, else just pick unique ones
+            per_level = total_count // len(levels)
+            level_counts = {lvl: 0 for lvl in levels}
+            
+            for q_data in all_db_questions:
+                if len(selected_questions) >= total_count:
+                    break
                 
-                # If not enough questions from database, use general fallback
-                if len(level_questions) < per_level:
-                    fallback_needed = per_level - len(level_questions)
-                    # Get questions from the main fallback method and filter by level
-                    all_fallback = self.get_fallback_assessment_questions(20)
-                    level_fallback = [q for q in all_fallback if q['level'] == lvl][:fallback_needed]
-                    level_questions.extend(level_fallback)
+                q_text = q_data['question'].lower().strip()
+                q_level = q_data['level']
                 
-                # Take exactly per_level questions
-                questions.extend(level_questions[:per_level])
+                if q_text not in seen_question_texts and level_counts[q_level] < per_level + (total_count % len(levels) if q_level == levels[-1] else 0): # Distribute remaining
+                    selected_questions.append(q_data)
+                    seen_question_texts.add(q_text)
+                    level_counts[q_level] += 1
             
-            # Ensure we have exactly total_count questions
-            if len(questions) < total_count:
-                remaining = total_count - len(questions)
-                additional_fallback = self.get_fallback_assessment_questions(remaining)
-                questions.extend(additional_fallback[:remaining])
-            
-            # Return questions in fixed order (no shuffling)
-            return questions[:total_count]  # Ensure exact count
+            # If still not enough, add more unique questions regardless of level distribution
+            if len(selected_questions) < total_count:
+                for q_data in all_db_questions:
+                    if len(selected_questions) >= total_count:
+                        break
+                    q_text = q_data['question'].lower().strip()
+                    if q_text not in seen_question_texts:
+                        selected_questions.append(q_data)
+                        seen_question_texts.add(q_text)
+
+            # Ensure the final list is exactly total_count and randomly shuffled
+            random.shuffle(selected_questions)
+            return selected_questions[:total_count]
             
         except Exception as e:
             print(f"Error getting mixed assessment questions: {e}")
-            return self.get_fallback_assessment_questions(total_count)
-    
+            # Fallback to general static questions if everything else fails
+            fallback_q = self.get_fallback_assessment_questions(total_count)
+            random.shuffle(fallback_q)
+            return fallback_q[:total_count]
+
     def get_studied_words(self, user_id):
         """Get a set of words a user has already studied."""
         try:
@@ -328,7 +348,7 @@ class ContentManager:
                 {'word': 'dog', 'definition': 'A domesticated carnivorous mammal', 'example': 'I have a dog.'},
                 {'word': 'house', 'definition': 'A building for human habitation', 'example': 'I live in a house.'}
             ],
-            'elementary': [
+            'amateur': [
                 {'word': 'car', 'definition': 'A road vehicle', 'example': 'I drive a car.'},
                 {'word': 'tree', 'definition': 'A large plant with a trunk and branches', 'example': 'I see a tree.'},
                 {'word': 'water', 'definition': 'A liquid', 'example': 'I drink water.'},
@@ -388,35 +408,35 @@ class ContentManager:
                     'topic_id': 5
                 }
             ],
-            'amatur': [
+            'amateur': [
                 {
                     'title': 'Present Perfect Tense',
                     'content': 'The Present Perfect Tense is used to:\n\n1. Connect past and present: "I have lived here for 5 years."\n2. Talk about experiences: "I have been to Paris."\n3. Recent actions: "I have just finished my homework."\n\nForm:\n- Subject + have/has + past participle\n- I/You/We/They + have + past participle\n- He/She/It + has + past participle\n\nExamples:\n- I have studied English for 3 years.\n- She has visited many countries.\n- They have just arrived.\n- He has never been to Japan.',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 1
                 },
                 {
                     'title': 'Past Continuous Tense',
                     'content': 'The Past Continuous Tense is used to:\n\n1. Describe actions in progress in the past: "I was reading when you called."\n2. Two actions happening at the same time: "While I was cooking, she was cleaning."\n3. Background actions: "It was raining when I left home."\n\nForm:\n- Subject + was/were + verb + ing\n- I/He/She/It + was + verb + ing\n- You/We/They + were + verb + ing\n\nExamples:\n- I was studying when the phone rang.\n- She was cooking dinner at 8 PM.\n- They were playing football in the rain.\n- He was working late last night.',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 2
                 },
                 {
                     'title': 'Modal Verbs (can, must, should)',
                     'content': 'Modal verbs express different meanings:\n\nCan:\n- Ability: "I can speak English."\n- Permission: "You can use my pen."\n- Possibility: "It can rain tomorrow."\n\nMust:\n- Necessity: "You must study hard."\n- Strong recommendation: "You must see this movie."\n- Certainty: "He must be at home."\n\nShould:\n- Advice: "You should exercise regularly."\n- Expectation: "He should arrive soon."\n- Recommendation: "You should try this restaurant."\n\nExamples:\n- I can help you with your homework.\n- You must finish this project today.\n- She should visit the doctor.\n- They can come to the party.',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 3
                 },
                 {
                     'title': 'Comparatives and Superlatives',
                     'content': 'Comparatives and Superlatives are used to compare things:\n\nComparatives:\n- Short adjectives: add -er: "big → bigger"\n- Long adjectives: use "more": "beautiful → more beautiful"\n- Use "than" to compare: "This car is bigger than that one."\n\nSuperlatives:\n- Short adjectives: add -est: "big → biggest"\n- Long adjectives: use "most": "beautiful → most beautiful"\n- Use "the" before superlatives: "This is the biggest car."\n\nExamples:\n- My house is bigger than yours.\n- She is more intelligent than her brother.\n- This is the most expensive car.\n- He is the tallest student in the class.',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 4
                 },
                 {
                     'title': 'Future with Going To',
                     'content': '"Going to" is used to express:\n\n1. Plans and intentions: "I am going to study medicine."\n2. Predictions based on evidence: "It is going to rain."\n3. Future arrangements: "We are going to have a party."\n\nForm:\n- Subject + be + going to + base form\n- I am going to + verb\n- He/She/It is going to + verb\n- You/We/They are going to + verb\n\nExamples:\n- I am going to visit my family next week.\n- She is going to start a new job.\n- They are going to buy a new house.\n- It is going to rain tomorrow.',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 5
                 }
             ],
@@ -490,6 +510,99 @@ class ContentManager:
             return lessons.get(level, lessons['beginner'])
         return random.choice(lessons.get(level, lessons['beginner']))
     
+    def populate_assessment_questions(self):
+        """Populate assessment_questions table with initial data."""
+        try:
+            # Get assessment questions from fallback
+            questions = self.get_fallback_assessment_questions(200) # Get more to ensure variety
+            
+            # Insert questions into database, avoiding duplicates
+            for q in questions:
+                options_str = '|'.join(q['options'])
+                
+                # Check if a similar question already exists
+                self.cursor.execute(
+                    "SELECT COUNT(*) FROM assessment_questions WHERE question = ? AND level = ?",
+                    (q['question'], q['level'])
+                )
+                if self.cursor.fetchone()[0] == 0: # Only insert if not exists
+                    self.cursor.execute(
+                        "INSERT INTO assessment_questions (question, options, answer, level, type) VALUES (?, ?, ?, ?, ?)",
+                        (q['question'], options_str, q['answer'], q['level'], 'multiple_choice')
+                    )
+            
+            self.conn.commit()
+            print(f"Populated assessment questions table with unique questions.")
+        except Exception as e:
+            print(f"Error populating assessment questions table: {e}")
+    
+    
+    def get_mixed_assessment_questions(self, total_count=20):
+        """Get a mix of assessment questions across different levels and types."""
+        try:
+            questions = []
+            levels = ['beginner', 'amateur', 'intermediate', 'advanced']
+            
+            # Fetch all questions from the database first
+            self.cursor.execute(
+                "SELECT question, options, answer, level FROM assessment_questions ORDER BY id"
+            )
+            all_db_questions = []
+            for row in self.cursor.fetchall():
+                all_db_questions.append({
+                    'question': row[0],
+                    'options': row[1].split('|'),
+                    'answer': row[2],
+                    'level': row[3]
+                })
+
+            # If no questions in DB, use only fallback
+            if not all_db_questions:
+                all_db_questions = self.get_fallback_assessment_questions(200) # Get a large set from fallback
+
+            # Shuffle all available questions (from DB or fallback) and pick unique ones
+            random.shuffle(all_db_questions)
+            
+            selected_questions = []
+            seen_question_texts = set()
+            
+            # Distribute questions by level if possible, else just pick unique ones
+            per_level = total_count // len(levels)
+            level_counts = {lvl: 0 for lvl in levels}
+            
+            for q_data in all_db_questions:
+                if len(selected_questions) >= total_count:
+                    break
+                
+                q_text = q_data['question'].lower().strip()
+                q_level = q_data['level']
+                
+                if q_text not in seen_question_texts and level_counts[q_level] < per_level + (total_count % len(levels) if q_level == levels[-1] else 0): # Distribute remaining
+                    selected_questions.append(q_data)
+                    seen_question_texts.add(q_text)
+                    level_counts[q_level] += 1
+            
+            # If still not enough, add more unique questions regardless of level distribution
+            if len(selected_questions) < total_count:
+                for q_data in all_db_questions:
+                    if len(selected_questions) >= total_count:
+                        break
+                    q_text = q_data['question'].lower().strip()
+                    if q_text not in seen_question_texts:
+                        selected_questions.append(q_data)
+                        seen_question_texts.add(q_text)
+
+            # Ensure the final list is exactly total_count and randomly shuffled
+            random.shuffle(selected_questions)
+            return selected_questions[:total_count]
+            
+        except Exception as e:
+            print(f"Error getting mixed assessment questions: {e}")
+            # Fallback to general static questions if everything else fails
+            fallback_q = self.get_fallback_assessment_questions(total_count)
+            random.shuffle(fallback_q)
+            return fallback_q[:total_count]
+            
     def get_fallback_assessment_questions(self, count=20):
         """Fallback assessment questions when database fails or is empty."""
         questions = [
@@ -500,12 +613,12 @@ class ContentManager:
             { 'question': 'What is the plural form of "child"?', 'options': ['Childs', 'Children', 'Childrens', 'Child'], 'answer': 'Children', 'level': 'beginner' },
             { 'question': 'Which word means "سلام"?', 'options': ['Goodbye', 'Hello', 'Thank you', 'Please'], 'answer': 'Hello', 'level': 'beginner' },
             
-            # Amatur questions (5)
-            { 'question': 'She _____ in that company for five years before she resigned.', 'options': ['worked', 'has worked', 'had worked', 'was working'], 'answer': 'had worked', 'level': 'amatur' },
-            { 'question': 'If I _____ rich, I would buy a big house.', 'options': ['am', 'was', 'were', 'had been'], 'answer': 'were', 'level': 'amatur' },
-            { 'question': 'Which sentence is grammatically correct?', 'options': ['I have been to Paris three times.', 'I have gone to Paris since three times.', 'I went to Paris for three times.', 'I am going to Paris three times.'], 'answer': 'I have been to Paris three times.', 'level': 'amatur' },
-            { 'question': 'The movie was _____ boring that we left the theater.', 'options': ['such', 'so', 'too', 'very'], 'answer': 'so', 'level': 'amatur' },
-            { 'question': 'She asked me _____ I could help her with the project.', 'options': ['what', 'that', 'if', 'when'], 'answer': 'if', 'level': 'amatur' },
+            # Amateur questions (5) - Ensured 'amateur' is used consistently
+            { 'question': 'She _____ in that company for five years before she resigned.', 'options': ['worked', 'has worked', 'had worked', 'was working'], 'answer': 'had worked', 'level': 'amateur' },
+            { 'question': 'If I _____ rich, I would buy a big house.', 'options': ['am', 'was', 'were', 'had been'], 'answer': 'were', 'level': 'amateur' },
+            { 'question': 'Which sentence is grammatically correct?', 'options': ['I have been to Paris three times.', 'I have gone to Paris since three times.', 'I went to Paris for three times.', 'I am going to Paris three times.'], 'answer': 'I have been to Paris three times.', 'level': 'amateur' },
+            { 'question': 'The movie was _____ boring that we left the theater.', 'options': ['such', 'so', 'too', 'very'], 'answer': 'so', 'level': 'amateur' },
+            { 'question': 'She asked me _____ I could help her with the project.', 'options': ['what', 'that', 'if', 'when'], 'answer': 'if', 'level': 'amateur' },
             
             # Intermediate questions (5)
             { 'question': 'By next year, I _____ English for ten years.', 'options': ['will study', 'will have studied', 'will be studying', 'study'], 'answer': 'will have studied', 'level': 'intermediate' },
@@ -521,45 +634,51 @@ class ContentManager:
             { 'question': 'The professor with whom I studied linguistics _____ a new book next year.', 'options': ['publishes', 'is publishing', 'publish', 'published'], 'answer': 'is publishing', 'level': 'advanced' },
             { 'question': 'Which word is a synonym for "ambiguous"?', 'options': ['Clear', 'Vague', 'Precise', 'Definite'], 'answer': 'Vague', 'level': 'advanced' }
         ]
-        return random.sample(questions, min(count, len(questions)))
+        # Return all questions from the fallback list for more options to pick from
+        # No random.sample here to allow the calling function to handle uniqueness and count
+        return questions
     
     def populate_vocabulary_table(self):
         """Populate vocabulary_words table with complete vocabulary data."""
         try:
-            # Get complete vocabulary for each level
-            vocabulary = self.get_fallback_vocabulary('beginner', 100)
-            vocabulary.extend(self.get_fallback_vocabulary('amatur', 100))
-            vocabulary.extend(self.get_fallback_vocabulary('intermediate', 100))
-            vocabulary.extend(self.get_fallback_vocabulary('advanced', 100))
+            levels = ['beginner', 'amateur', 'intermediate', 'advanced']
+            all_vocabulary = []
+
+            for level in levels:
+                words = self.get_fallback_vocabulary(level, 100)  # Get words for the current level
+                for word_data in words:
+                    # Add the level to each word dictionary
+                    word_data['level'] = level
+                    all_vocabulary.append(word_data)
             
             # Insert words into database
-            for word_data in vocabulary:
+            for word_data in all_vocabulary:
                     try:
                         self.cursor.execute(
                             "INSERT INTO vocabulary_words (word, definition, example, level) VALUES (?, ?, ?, ?)",
                         (word_data['word'], word_data['definition'], word_data['example'], word_data['level'])
                         )
-                    except Exception:
+                    except sqlite3.IntegrityError:
                         # Word might already exist, skip it
                         continue
             
             self.conn.commit()
-            print(f"Populated vocabulary table with {len(vocabulary)} words for all levels")
+            print(f"Populated vocabulary table with {len(all_vocabulary)} words for all levels")
         except Exception as e:
-            print(f"Error populating vocabulary table: {e}")
+            print(f"Error populating vocabulary table: {e}")    
     
     def populate_grammar_lessons(self):
         """Populate grammar_lessons table with complete grammar data."""
         try:
             # Get all grammar lessons for each level
-            levels = ['beginner', 'amatur', 'intermediate', 'advanced']
+            levels = ['beginner', 'amateur', 'intermediate', 'advanced']
             
             for level in levels:
                 lessons = self.get_fallback_grammar_lesson(level, all_lessons=True)
                 
                 for lesson in lessons:
                     try:
-            self.cursor.execute(
+                        self.cursor.execute(
                 "INSERT INTO grammar_lessons (title, content, level) VALUES (?, ?, ?)",
                             (lesson['title'], lesson['content'], level)
                         )
@@ -572,44 +691,42 @@ class ContentManager:
         except Exception as e:
             print(f"Error populating grammar lessons table: {e}")
     
+    
     def populate_assessment_questions(self):
         """Populate assessment_questions table with initial data."""
         try:
-            # Get assessment questions
-            questions = self.get_fallback_assessment_questions(15)
+            # Get assessment questions from fallback
+            questions = self.get_fallback_assessment_questions(200) # Get more to ensure variety
             
-            # Insert questions into database
+            # Insert questions into database, avoiding duplicates
             for q in questions:
                 options_str = '|'.join(q['options'])
+                
+                # Check if a similar question already exists
                 self.cursor.execute(
-                    "INSERT INTO assessment_questions (question, options, answer, level, type) VALUES (?, ?, ?, ?, ?)",
-                    (q['question'], options_str, q['answer'], q['level'], 'multiple_choice')
+                    "SELECT COUNT(*) FROM assessment_questions WHERE question = ? AND level = ?",
+                    (q['question'], q['level'])
                 )
+                if self.cursor.fetchone()[0] == 0: # Only insert if not exists
+                    self.cursor.execute(
+                        "INSERT INTO assessment_questions (question, options, answer, level, type) VALUES (?, ?, ?, ?, ?)",
+                        (q['question'], options_str, q['answer'], q['level'], 'multiple_choice')
+                    )
             
             self.conn.commit()
-            print(f"Populated assessment questions table with {len(questions)} questions")
+            print(f"Populated assessment questions table with unique questions.")
         except Exception as e:
             print(f"Error populating assessment questions table: {e}")
+    
     
     def populate_conversation_topics(self):
         """Populate conversation_topics table with complete conversation data."""
         try:
-            # Get all conversation topics for each level
-            levels = ['beginner', 'amatur', 'intermediate', 'advanced']
+            levels = ['beginner', 'amateur', 'intermediate', 'advanced']
             
             for level in levels:
-                topics = self.get_fallback_conversation_topics(None, level)
-                if isinstance(topics, list):
-                    # If it's a list, get all topics for this level
-                    all_topics = self.get_fallback_conversation_topics(None, level)
-                    if isinstance(all_topics, dict):
-                        # If it's a dict, get the topics for this level
-                        level_topics = all_topics.get(level, [])
-                    else:
-                        level_topics = all_topics
-                else:
-                    # Single topic
-                    level_topics = [topics]
+                # Use the internal method to get all static topics for the level
+                level_topics = self._get_static_conversation_topics(level)
                 
                 for topic in level_topics:
                     if isinstance(topic, dict):
@@ -618,7 +735,7 @@ class ContentManager:
                                 "INSERT INTO conversation_topics (title, description, starter, level, topic_id) VALUES (?, ?, ?, ?, ?)",
                                 (topic['title'], topic['description'], topic['starter'], topic['level'], topic['topic_id'])
                             )
-                        except Exception:
+                        except sqlite3.IntegrityError:
                             # Topic might already exist, skip it
                             continue
             
@@ -626,6 +743,7 @@ class ContentManager:
             print(f"Populated conversation topics table with topics for all levels")
         except Exception as e:
             print(f"Error populating conversation topics table: {e}")
+    
 
     def get_fallback_conversation_topics(self, user_id, level):
         """Get conversation topics for a specific level, first from database then fallback."""
@@ -721,40 +839,40 @@ class ContentManager:
                     'topic_id': 5
                 }
             ],
-            'amatur': [
+            'amateur': [
                 {
                     'title': 'Talk about your hobbies',
                     'description': 'What do you like to do in your free time? Describe your hobbies and why you enjoy them.',
                     'starter': 'In my free time, I like to...',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 1
                 },
                 {
                     'title': 'Describe a memorable trip',
                     'description': 'Tell me about a trip you remember well - where you went, what you did, and why it was special.',
                     'starter': 'I remember a trip when I...',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 2
                 },
                 {
                     'title': 'Talk about your school or job',
                     'description': 'Describe your school or workplace - what you study or do, and how you feel about it.',
                     'starter': 'I study/work at...',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 3
                 },
                 {
                     'title': 'Describe your best friend',
                     'description': 'Tell me about your best friend - how you met, what they are like, and why you are friends.',
                     'starter': 'My best friend is...',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 4
                 },
                 {
                     'title': 'Talk about your weekend plans',
                     'description': 'What are you planning to do this weekend? Describe your plans and why you chose these activities.',
                     'starter': 'This weekend I plan to...',
-                    'level': 'amatur',
+                    'level': 'amateur',
                     'topic_id': 5
                 }
             ],
@@ -888,145 +1006,205 @@ class ContentManager:
             # Fallback
             return len(self.get_fallback_vocabulary(level, 200))
 
+    
     def get_total_grammar_count(self, level):
         """Get total number of grammar lessons for a level."""
         try:
+            # First, try to get the count from the database
+            self.cursor.execute("SELECT COUNT(*) FROM grammar_lessons WHERE level = ?", (level,))
+            count = self.cursor.fetchone()[0]
+            if count > 0:
+                return count
+            
+            # If the database is empty, fall back to the static list
             all_lessons = self.get_fallback_grammar_lesson(level, all_lessons=True)
             return len(all_lessons) if all_lessons else 0
         except Exception as e:
             print(f"Error getting total grammar count: {e}")
-            return 0
+            return 5 # Fallback to a default of 5 if everything fails
 
+    
+    
     def get_total_conversation_count(self, level):
         """Get total number of conversation topics for a level."""
         try:
-            # First try to get count from database
+            # First, try to get the count from the database
             self.cursor.execute("SELECT COUNT(*) FROM conversation_topics WHERE level = ?", (level,))
             count = self.cursor.fetchone()[0]
             if count > 0:
                 return count
             
-            # Fallback to static count
-            return 5
+            # If the database is empty, fall back to the static list
+            all_topics = self._get_static_conversation_topics(level)
+            return len(all_topics) if all_topics else 0
         except Exception as e:
             print(f"Error getting conversation count for level {level}: {e}")
-            return 5
-
+            return 5 # Fallback to a default of 5 if everything fails
+    
     def check_duplicate_vocabulary(self):
-        """Check for duplicate vocabulary words across all levels."""
-        all_words = {}
-        for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
-            words = self.get_fallback_vocabulary(level, 200)
-            for w in words:
-                word = w['word'].lower()
-                if word not in all_words:
-                    all_words[word] = []
-                all_words[word].append(level)
-        return {w: lvls for w, lvls in all_words.items() if len(lvls) > 1}
+        """Check for duplicate vocabulary words across all levels in the database."""
+        self.cursor.execute("SELECT word, level FROM vocabulary_words")
+        all_db_words = self.cursor.fetchall()
+
+        all_words_map = {}
+        for word_text, level in all_db_words:
+            normalized_word = word_text.lower()
+            if normalized_word not in all_words_map:
+                all_words_map[normalized_word] = []
+            all_words_map[normalized_word].append(level)
+        
+        return {w: lvls for w, lvls in all_words_map.items() if len(lvls) > 1}
 
     def check_duplicate_grammar(self):
-        """Check for duplicate grammar lesson titles across all levels."""
-        all_titles = {}
-        for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
-            lessons = self.get_fallback_grammar_lesson(level, all_lessons=True)
-            for l in lessons:
-                title = l['title'].strip().lower()
-                if title not in all_titles:
-                    all_titles[title] = []
-                all_titles[title].append(level)
-        return {t: lvls for t, lvls in all_titles.items() if len(lvls) > 1}
+        """Check for duplicate grammar lesson titles across all levels in the database."""
+        self.cursor.execute("SELECT title, level FROM grammar_lessons")
+        all_db_lessons = self.cursor.fetchall()
+
+        all_titles_map = {}
+        for title_text, level in all_db_lessons:
+            normalized_title = title_text.strip().lower()
+            if normalized_title not in all_titles_map:
+                all_titles_map[normalized_title] = []
+            all_titles_map[normalized_title].append(level)
+        
+        return {t: lvls for t, lvls in all_titles_map.items() if len(lvls) > 1}
 
     def check_duplicate_conversation(self):
-        """Check for duplicate conversation topics across all levels."""
-        all_topics = {}
-        # Use the static topics dictionary directly
-        topics_dict = {
-            'beginner': [
-                'Introduce yourself',
-                'Talk about your family',
-                'Describe your house',
-                'Talk about your favorite food',
-                'Describe your daily routine',
-                # ... (add all beginner topics here) ...
-            ],
-            'amatur': [
-                'Talk about your hobbies',
-                'Describe a memorable trip',
-                'Talk about your school or job',
-                'Describe your best friend',
-                'Talk about your weekend plans',
-                # ... (add all amatur topics here) ...
-            ],
-            'intermediate': [
-                'Discuss a book or movie you like',
-                'Talk about technology in your life',
-                'Describe a problem you solved',
-                'Talk about your goals for the future',
-                'Discuss a cultural tradition',
-                # ... (add all intermediate topics here) ...
-            ],
-            'advanced': [
-                'Debate a current event',
-                'Discuss environmental issues',
-                'Talk about the impact of social media',
-                'Discuss education systems',
-                'Debate the pros and cons of globalization',
-                # ... (add all advanced topics here) ...
-            ]
-        }
-        for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
-            topics = topics_dict.get(level, [])
-            for t in topics:
-                topic = t.strip().lower()
-                if topic not in all_topics:
-                    all_topics[topic] = []
-                all_topics[topic].append(level)
-        return {t: lvls for t, lvls in all_topics.items() if len(lvls) > 1}
+        """Check for duplicate conversation topics across all levels in the database."""
+        self.cursor.execute("SELECT title, level FROM conversation_topics")
+        all_db_topics = self.cursor.fetchall()
+
+        all_titles_map = {}
+        for title_text, level in all_db_topics:
+            normalized_title = title_text.strip().lower()
+            if normalized_title not in all_titles_map:
+                all_titles_map[normalized_title] = []
+            all_titles_map[normalized_title].append(level)
+        
+        return {t: lvls for t, lvls in all_titles_map.items() if len(lvls) > 1}
+
 
     def remove_duplicate_vocabulary(self):
-        """Remove duplicate vocabulary words, keeping the word in the lowest level."""
-        seen = set()
-        for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
-            vocab = self.get_fallback_vocabulary(level, 200)
-            unique = []
-            for w in vocab:
-                word = w['word'].lower()
-                if word not in seen:
-                    unique.append(w)
-                    seen.add(word)
-            # Overwrite the vocabulary for this level (if using in-memory)
-            # If using DB, would need to update DB as well
-        # Note: This only affects in-memory fallback, not DB
+        """Remove duplicate vocabulary words, keeping the word in the lowest level from the database."""
+        try:
+            # Get all words from the database, ordered by level priority (beginner, amateur, intermediate, advanced)
+            # and then by ID to keep the earliest entry in case of same level duplicates
+            self.cursor.execute("""
+                SELECT word, level, id FROM vocabulary_words 
+                ORDER BY 
+                    CASE level
+                        WHEN 'beginner' THEN 1
+                        WHEN 'amateur' THEN 2
+                        WHEN 'intermediate' THEN 3
+                        WHEN 'advanced' THEN 4
+                        ELSE 5
+                    END,
+                    id ASC
+            """)
+            all_db_words = self.cursor.fetchall()
 
+            seen_words = set()
+            words_to_delete_ids = []
+
+            for word_text, level, word_id in all_db_words:
+                normalized_word = word_text.lower()
+                if normalized_word in seen_words:
+                    words_to_delete_ids.append(word_id)
+                else:
+                    seen_words.add(normalized_word)
+            
+            if words_to_delete_ids:
+                # Delete duplicate words from the database
+                placeholders = ','.join('?' * len(words_to_delete_ids))
+                self.cursor.execute(f"DELETE FROM vocabulary_words WHERE id IN ({placeholders})", words_to_delete_ids)
+                self.conn.commit()
+                print(f"Removed {len(words_to_delete_ids)} duplicate vocabulary words from the database.")
+            else:
+                print("No duplicate vocabulary words found in the database to remove.")
+
+        except Exception as e:
+            print(f"Error removing duplicate vocabulary from DB: {e}")
+    
     def remove_duplicate_grammar(self):
-        """Remove duplicate grammar lessons, keeping the lesson in the lowest level."""
-        seen = set()
-        for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
-            lessons = self.get_fallback_grammar_lesson(level, all_lessons=True)
-            unique = []
-            for l in lessons:
-                title = l['title'].strip().lower()
-                if title not in seen:
-                    unique.append(l)
-                    seen.add(title)
-            # Overwrite the lessons for this level (if using in-memory)
-        # Note: This only affects in-memory fallback, not DB
+        """Remove duplicate grammar lessons, keeping the lesson in the lowest level from the database."""
+        try:
+            # Get all lessons from the database, ordered by level priority
+            self.cursor.execute("""
+                SELECT title, level, id FROM grammar_lessons 
+                ORDER BY 
+                    CASE level
+                        WHEN 'beginner' THEN 1
+                        WHEN 'amateur' THEN 2
+                        WHEN 'intermediate' THEN 3
+                        WHEN 'advanced' THEN 4
+                        ELSE 5
+                    END,
+                    id ASC
+            """)
+            all_db_lessons = self.cursor.fetchall()
 
+            seen_titles = set()
+            lessons_to_delete_ids = []
+
+            for title_text, level, lesson_id in all_db_lessons:
+                normalized_title = title_text.strip().lower()
+                if normalized_title in seen_titles:
+                    lessons_to_delete_ids.append(lesson_id)
+                else:
+                    seen_titles.add(normalized_title)
+            
+            if lessons_to_delete_ids:
+                # Delete duplicate lessons from the database
+                placeholders = ','.join('?' * len(lessons_to_delete_ids))
+                self.cursor.execute(f"DELETE FROM grammar_lessons WHERE id IN ({placeholders})", lessons_to_delete_ids)
+                self.conn.commit()
+                print(f"Removed {len(lessons_to_delete_ids)} duplicate grammar lessons from the database.")
+            else:
+                print("No duplicate grammar lessons found in the database to remove.")
+
+        except Exception as e:
+            print(f"Error removing duplicate grammar from DB: {e}")
+    
     def remove_duplicate_conversation(self):
-        """Remove duplicate conversation topics, keeping the topic in the lowest level."""
-        seen = set()
-        for level in ['beginner', 'amatur', 'intermediate', 'advanced']:
-            topics = self.get_fallback_conversation_topics(None, level) if hasattr(self, 'get_fallback_conversation_topics') else []
-            unique = []
-            if isinstance(topics, list):
-                for t in topics:
-                    topic = t.strip().lower()
-                    if topic not in seen:
-                        unique.append(t)
-                        seen.add(topic)
-            # Overwrite the topics for this level (if using in-memory)
-        # Note: This only affects in-memory fallback, not DB
+        """Remove duplicate conversation topics, keeping the topic in the lowest level from the database."""
+        try:
+            # Get all topics from the database, ordered by level priority
+            self.cursor.execute("""
+                SELECT title, level, id FROM conversation_topics 
+                ORDER BY 
+                    CASE level
+                        WHEN 'beginner' THEN 1
+                        WHEN 'amateur' THEN 2
+                        WHEN 'intermediate' THEN 3
+                        WHEN 'advanced' THEN 4
+                        ELSE 5
+                    END,
+                    id ASC
+            """)
+            all_db_topics = self.cursor.fetchall()
 
+            seen_titles = set()
+            topics_to_delete_ids = []
+
+            for title_text, level, topic_id in all_db_topics:
+                normalized_title = title_text.strip().lower()
+                if normalized_title in seen_titles:
+                    topics_to_delete_ids.append(topic_id)
+                else:
+                    seen_titles.add(normalized_title)
+            
+            if topics_to_delete_ids:
+                # Delete duplicate topics from the database
+                placeholders = ','.join('?' * len(topics_to_delete_ids))
+                self.cursor.execute(f"DELETE FROM conversation_topics WHERE id IN ({placeholders})", topics_to_delete_ids)
+                self.conn.commit()
+                print(f"Removed {len(topics_to_delete_ids)} duplicate conversation topics from the database.")
+            else:
+                print("No duplicate conversation topics found in the database to remove.")
+
+        except Exception as e:
+            print(f"Error removing duplicate conversation from DB: {e}")
+    
     def run_content_deduplication_report(self):
         """Check and remove duplicates, print a report."""
         vocab_dupes = self.check_duplicate_vocabulary()
