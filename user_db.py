@@ -33,8 +33,7 @@ class UserDatabase:
                 level TEXT DEFAULT 'beginner',
                 join_date TEXT,
                 last_active TEXT,
-                notifications INTEGER DEFAULT 1,
-                assessment_done INTEGER DEFAULT 0
+                assessment_done BOOLEAN DEFAULT FALSE
             )
             ''')
             
@@ -43,15 +42,15 @@ class UserDatabase:
             CREATE TABLE IF NOT EXISTS progress (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                category TEXT,
-                score REAL,
-                date TEXT,
+                section TEXT,
                 level TEXT,
+                score REAL DEFAULT 0,
+                date TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
             ''')
             
-            # Create vocabulary tracking table
+            # Create vocabulary table
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS vocabulary (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,20 +62,15 @@ class UserDatabase:
             )
             ''')
             
-            # Create index for faster lookups
-            self.cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_vocab_user_word 
-            ON vocabulary (user_id, word)
-            ''')
-            
-            # Create user_grammar table
+            # Create user_grammar table to track completed grammar lessons
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_grammar (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                lesson_title TEXT,
                 level TEXT,
-                date TEXT,
+                topic_id INTEGER,
+                score INTEGER DEFAULT 0,
+                completed_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
             ''')
@@ -86,14 +80,32 @@ class UserDatabase:
             CREATE TABLE IF NOT EXISTS user_conversation (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                topic TEXT,
+                topic_id INTEGER,
                 level TEXT,
-                date TEXT,
+                seen_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+            ''')
+            
+            # Create index for faster lookups
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_user_conversation_user_level 
+            ON user_conversation (user_id, level)
+            ''')
+            
+            # Create vocab_tested table to track tested words
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS vocab_tested (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                word TEXT,
+                tested_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
             ''')
             
             self.conn.commit()
+            print("Database initialized successfully")
         except Exception as e:
             print(f"Error initializing database: {e}")
     
@@ -196,13 +208,14 @@ class UserDatabase:
             print(f"Error in force_update_level: {e}")
             return False
     
-    def add_progress(self, user_id, category, score):
+    def add_progress(self, user_id, section, score):
         """Add a progress entry for a user."""
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            level = self.get_user_level(user_id)
             self.cursor.execute(
-                "INSERT INTO progress (user_id, category, score, date) VALUES (?, ?, ?, ?)",
-                (user_id, category, score, now)
+                "INSERT INTO progress (user_id, section, level, score, date) VALUES (?, ?, ?, ?, ?)",
+                (user_id, section, level, score, now)
             )
             self.conn.commit()
             return True
@@ -226,18 +239,18 @@ class UserDatabase:
         new_score = min(100, current + increment)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.cursor.execute(
-            "INSERT INTO progress (user_id, category, score, date, level) VALUES (?, ?, ?, ?, ?)",
-            (user_id, section, new_score, now, level)
-                )
+            "INSERT INTO progress (user_id, section, level, score, date) VALUES (?, ?, ?, ?, ?)",
+            (user_id, section, level, new_score, now)
+        )
         self.conn.commit()
         return new_score
 
     def get_section_progress(self, user_id, section, level):
         """Get progress percent for a section and level."""
         self.cursor.execute(
-            "SELECT score FROM progress WHERE user_id = ? AND category = ? AND level = ? ORDER BY date DESC LIMIT 1",
+            "SELECT score FROM progress WHERE user_id = ? AND section = ? AND level = ? ORDER BY date DESC LIMIT 1",
             (user_id, section, level)
-            )
+        )
         result = self.cursor.fetchone()
         return result[0] if result else 0
 
@@ -272,8 +285,8 @@ class UserDatabase:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.cursor.execute(
-                "INSERT INTO progress (user_id, category, score, date) VALUES (?, ?, ?, ?)",
-                (user_id, "assessment", percentage, now)
+                "INSERT INTO progress (user_id, section, level, score, date) VALUES (?, ?, ?, ?, ?)",
+                (user_id, "assessment", self.get_user_level(user_id), percentage, now)
             )
             self.conn.commit()
             return True, None
@@ -288,7 +301,7 @@ class UserDatabase:
             self.cursor.execute(
                 """
                 SELECT score FROM progress 
-                WHERE user_id = ? AND category = 'assessment' 
+                WHERE user_id = ? AND section = 'assessment' 
                 ORDER BY date DESC LIMIT 1
                 """,
                 (user_id,)
@@ -382,14 +395,14 @@ class UserDatabase:
                 self.cursor.execute("SELECT COUNT(*) FROM progress")
                 debug_info['progress_count'] = self.cursor.fetchone()[0]
                 
-                self.cursor.execute("SELECT COUNT(*) FROM progress WHERE category = 'assessment'")
+                self.cursor.execute("SELECT COUNT(*) FROM progress WHERE section = 'assessment'")
                 debug_info['assessment_progress_count'] = self.cursor.fetchone()[0]
                 
                 # Get last assessment
                 self.cursor.execute(
                     """
                     SELECT score, date FROM progress 
-            WHERE user_id = ? AND category = 'assessment'
+                    WHERE user_id = ? AND section = 'assessment'
                     ORDER BY date DESC LIMIT 1
                     """,
                     (user_id,)
@@ -580,3 +593,46 @@ class UserDatabase:
         )
         result = self.cursor.fetchone()
         return result and result[0] == 1
+
+    def get_avg_vocab_score(self, user_id, level):
+        """Get the average score of vocabulary practice for a user and level."""
+        try:
+            self.cursor.execute(
+                "SELECT AVG(score) FROM vocabulary v JOIN vocabulary_words w ON v.word = w.word WHERE v.user_id = ? AND w.level = ?",
+                (user_id, level)
+            )
+            result = self.cursor.fetchone()
+            return result[0] if result and result[0] is not None else 0
+        except Exception as e:
+            print(f"Error getting average vocabulary score: {e}")
+            return 0
+
+    def get_next_untested_words(self, user_id, level, batch_size=20):
+        """Get the next batch of untested words for a user and level."""
+        try:
+            self.cursor.execute('''
+                SELECT w.word, w.definition
+                FROM vocabulary_words w
+                LEFT JOIN vocab_tested t ON w.word = t.word AND t.user_id = ?
+                WHERE w.level = ?
+                AND w.word IN (SELECT word FROM vocabulary WHERE user_id = ?)
+                AND t.word IS NULL
+                LIMIT ?
+            ''', (user_id, level, user_id, batch_size))
+            return [{'word': row[0], 'definition': row[1]} for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting untested words: {e}")
+            return []
+
+    def mark_words_tested(self, user_id, words):
+        """Mark a list of words as tested for a user."""
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for word in words:
+                self.cursor.execute(
+                    "INSERT INTO vocab_tested (user_id, word, tested_at) VALUES (?, ?, ?)",
+                    (user_id, word, now)
+                )
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error marking words as tested: {e}")

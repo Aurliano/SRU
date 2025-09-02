@@ -11,7 +11,7 @@ import os
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import google.generativeai as genai
+from openai import OpenAI
 import pytz
 from datetime import time, datetime
 import json
@@ -25,22 +25,20 @@ load_dotenv()
 
 # Get the tokens from environment variables
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
-# Configure the Gemini API client
-if not GOOGLE_API_KEY:
+# Configure the OpenAI API client
+if not OPENAI_API_KEY:
     # Use logger now that it's defined
-    logger.error("Error: GOOGLE_API_KEY not found in .env file.")
+    logger.error("Error: OPENAI_API_KEY not found in .env file.")
     exit()
 try:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    # Initialize the Gemini Pro model - USE THE CONFIRMED MODEL NAME
-    gemini_model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
     # Use logger now that it's defined
-    logger.info(f"Google Generative AI configured successfully using model: {gemini_model.model_name}")
+    logger.info("OpenAI API configured successfully")
 except Exception as e:
     # Use logger now that it's defined
-    logger.error(f"Error configuring Google Generative AI: {e}", exc_info=True)
+    logger.error(f"Error configuring OpenAI API: {e}", exc_info=True)
     exit()
 
 # Initialize database and content manager
@@ -134,8 +132,8 @@ async def assess_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Starting level assessment for user {user_id}")
 
     user_states[user_id] = LEVEL_ASSESSMENT
-    # Use the new function to get 15 mixed questions
-    assessment_questions = content_manager.get_mixed_assessment_questions(total_count=15)
+    # Use the new function to get 20 mixed questions
+    assessment_questions = content_manager.get_mixed_assessment_questions(total_count=20)
     if not assessment_questions:
         logger.warning("No assessment questions found in content manager.")
         await update.message.reply_text("متاسفانه در حال حاضر امکان سنجش سطح وجود ندارد.")
@@ -145,8 +143,8 @@ async def assess_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['assessment_questions'] = assessment_questions
     context.user_data['current_question'] = 0
     context.user_data['correct_answers'] = 0
-    context.user_data['correct_by_level'] = {"beginner": 0, "intermediate": 0, "advanced": 0}
-    context.user_data['total_by_level'] = {"beginner": 0, "intermediate": 0, "advanced": 0}
+    context.user_data['correct_by_level'] = {"beginner": 0, "amatur": 0, "intermediate": 0, "advanced": 0}
+    context.user_data['total_by_level'] = {"beginner": 0, "amatur": 0, "intermediate": 0, "advanced": 0}
 
 
     await update.message.reply_text(f"شروع آزمون تعیین سطح ({len(assessment_questions)} سوال)...")
@@ -551,9 +549,12 @@ Be generous with scoring - if the student made a good attempt, they can get full
 Provide feedback in Persian, being encouraging and constructive.
 Format the score clearly at the end, e.g., Score: 85/100."""
 
-        response = gemini_model.generate_content(prompt)
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
+        )
         logger.info("Gemini call successful for VOCABULARY_PRACTICE")
-        feedback = response.text
+        feedback = response.choices[0].message.content
 
         # Extract score using simple heuristic
         score = 70  # Default score
@@ -579,17 +580,25 @@ Format the score clearly at the end, e.g., Score: 85/100."""
         
         await update.message.reply_text(feedback, reply_markup=reply_markup)
         
-        # Calculate increment
-        level = db.get_user_level(user_id)
+        # --- Weighted progress calculation ---
+        # Number of unique words studied for this level
+        words_studied = db.get_words_studied_count(user_id)
         total_vocab = content_manager.get_total_vocabulary_count(level)
-        increment = 100 / total_vocab if total_vocab else 1
-        db.add_section_progress(user_id, 'vocabulary', level, increment)
-        # Check for level up
+        studied_ratio = min(words_studied / total_vocab, 1.0) if total_vocab else 0
+        avg_score = db.get_avg_vocab_score(user_id, level)
+        # Weighted: 60% for coverage, 40% for avg score
+        weighted_progress = (studied_ratio * 60) + (avg_score * 0.4)
+        db.add_section_progress(user_id, 'vocabulary', level, weighted_progress)
         if db.check_and_upgrade_level(user_id):
             await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
-        
     except Exception as e:
         logger.error(f"Error in VOCABULARY_PRACTICE: {str(e)}", exc_info=True)
+        level = db.get_user_level(user_id)
+        total_vocab = content_manager.get_total_vocabulary_count(level)
+        studied_ratio = min(words_studied / total_vocab, 1.0) if total_vocab else 0
+        avg_score = db.get_avg_vocab_score(user_id, level)
+        weighted_progress = (studied_ratio * 60) + (avg_score * 0.4)
+        db.add_section_progress(user_id, 'vocabulary', level, weighted_progress)
         await update.message.reply_text("متأسفانه در بررسی پیام شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
 
 async def vocabulary_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -607,20 +616,15 @@ async def vocabulary_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await send_vocab_test_question(update.message, context)
 
-    # Get recently studied words for this user (up to 20)
-    recent_words = db.get_recent_studied_words(user_id, 20)
-
-    if not recent_words or len(recent_words) < 20:
-        # Not enough words studied for a test
+    # Get the next batch of 20 untested words for this user and level
+    test_words = db.get_next_untested_words(user_id, level, 20)
+    if not test_words or len(test_words) < 20:
         await update.message.reply_text(
-            "برای شرکت در آزمون لغت باید حداقل ۲۰ لغت را تمرین کرده باشید. لطفاً ابتدا لغات بیشتری تمرین کنید تا آزمون فعال شود."
+            "برای شرکت در آزمون لغت باید حداقل ۲۰ لغت جدید تمرین کرده باشید که قبلاً در آزمون شرکت داده نشده‌اند."
+            " لطفاً ابتدا لغات بیشتری تمرین کنید تا آزمون فعال شود."
         )
         # Redirect back to vocabulary practice
         return await vocabulary_practice(update, context)
-
-    # Select 20 random words from recently studied words
-    import random
-    test_words = random.sample(recent_words, 20)
 
     # Create a multiple choice test
     context.user_data['vocab_test'] = {
@@ -641,7 +645,6 @@ async def vocabulary_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_vocab_test_question(message: Message, context: ContextTypes.DEFAULT_TYPE):
     """Send a vocabulary test question."""
     user_id = message.chat_id
-
     test_data = context.user_data.get('vocab_test', {})
     test_words = test_data.get('words', [])
     current_q = test_data.get('current_question', 0)
@@ -651,18 +654,21 @@ async def send_vocab_test_question(message: Message, context: ContextTypes.DEFAU
         correct = test_data.get('correct_answers', 0)
         total = len(test_words)
         score = (correct / total) * 100 if total > 0 else 0
-
-        # Update progress
         level = db.get_user_level(user_id)
+        # Update progress
         db.add_section_progress(user_id, 'assessment', level, score)
-
-        # Mark test as completed
-        context.user_data['test_completed'] = True
-        context.user_data['vocab_test'] = None  # Clear test data
-
+        # Mark these words as tested
+        db.mark_words_tested(user_id, [w['word'] for w in test_words])
+        # Update vocabulary progress after test
+        words_studied = db.get_words_studied_count(user_id)
+        total_vocab = content_manager.get_total_vocabulary_count(level)
+        studied_ratio = min(words_studied / total_vocab, 1.0) if total_vocab else 0
+        avg_score = db.get_avg_vocab_score(user_id, level)
+        weighted_progress = (studied_ratio * 60) + (avg_score * 0.4)
+        db.add_section_progress(user_id, 'vocabulary', level, weighted_progress)
+        context.user_data['test_completed'] = False  # Reset so next 20 triggers test again
         # Reset state
         user_states[user_id] = MAIN_MENU
-
         result_text = (
             f"✅ آزمون لغت به پایان رسید!\n\n"
             f"نتیجه شما: {correct} از {total} ({score:.1f}%)\n\n"
@@ -675,11 +681,9 @@ async def send_vocab_test_question(message: Message, context: ContextTypes.DEFAU
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text(result_text, reply_markup=reply_markup)
-
         # Check for level up
         if db.check_and_upgrade_level(user_id):
             await message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
-
         return
 
     # Get current word
@@ -791,7 +795,7 @@ async def handle_vocab_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await send_vocab_test_question(query.message, context)
 
 async def grammar_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send grammar lesson."""
+    """Send grammar lesson with exercises."""
     user_id = update.effective_chat.id
     db.update_last_active(user_id)
     
@@ -799,35 +803,55 @@ async def grammar_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE):
     level = db.get_user_level(user_id)
     logger.info(f"Starting grammar lesson for user {user_id} with level '{level}'")
     
+    # Get the next uncompleted grammar lesson
     lesson = content_manager.get_grammar_lesson_for_level(user_id, level)
+    
+    if not lesson:
+        await update.message.reply_text("متأسفانه در حال حاضر درس گرامر در دسترس نیست.")
+        return
+    
+    # Store lesson info in context for exercises
+    context.user_data['current_grammar_lesson'] = {
+        'title': lesson['title'],
+        'content': lesson['content'],
+        'level': lesson['level'],
+        'topic_id': lesson['topic_id'],
+        'exercises_completed': 0,
+        'total_score': 0
+    }
     
     user_states[user_id] = GRAMMAR_LESSON
     
     message = f"📝 درس گرامر: {lesson['title']} (سطح {level})\n\n"
     message += f"{lesson['content']}\n\n"
-    message += "لطفاً یک جمله با استفاده از این قاعده گرامری بنویسید تا من آن را بررسی کنم."
+    message += "حالا ۵ تمرین برای شما آماده می‌کنم. لطفاً برای هر تمرین، جمله‌ای با استفاده از این قاعده گرامری بنویسید.\n\n"
+    message += "تمرین ۱ از ۵:\n"
+    message += "جمله‌ای با استفاده از قاعده گرامری که یاد گرفتید بنویسید:"
     
     await update.message.reply_text(message)
 
 async def conversation_practice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start or continue advanced conversation practice using Gemini."""
+    """Start or continue advanced conversation practice using OpenAI."""
     user_id = update.effective_chat.id
     db.update_last_active(user_id)
     logger.info(f"Starting/continuing conversation practice for user {user_id}")
 
     level = db.get_user_level(user_id)
-    topic = content_manager.get_fallback_conversation_topics(user_id, level)
+    topic_data = content_manager.get_fallback_conversation_topics(user_id, level)
     user_states[user_id] = CONVERSATION_PRACTICE
 
     # Initialize conversation history and topic if not present
     if 'conversation_history' not in context.user_data:
         context.user_data['conversation_history'] = []
     if 'conversation_topic' not in context.user_data:
-        context.user_data['conversation_topic'] = topic
+        context.user_data['conversation_topic'] = topic_data
 
     # If this is the first message, send the topic and ask for a reply
     if not context.user_data['conversation_history']:
-        message = f"🗣️ موضوع مکالمه (سطح {level}):\n\n{topic}\n\nلطفاً به انگلیسی پاسخ دهید."
+        message = f"🗣️ موضوع مکالمه (سطح {level}):\n\n"
+        message += f"📝 {topic_data['title']}\n"
+        message += f"💡 {topic_data['description']}\n\n"
+        message += f"💬 شروع کنید: {topic_data['starter']}"
         await update.message.reply_text(message)
         return
     
@@ -928,34 +952,100 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("لطفاً از گزینه‌های موجود یکی را انتخاب کنید.")
     elif state == GRAMMAR_LESSON:
         try:
-            logger.info(f"Calling Gemini for GRAMMAR_LESSON...")
-             # Construct prompt for Gemini
-            prompt = f"""You are an English teacher. A student has learned a grammar rule and written a sentence.
-Student's sentence: "{message}"
-Check if the student's sentence uses correct grammar, especially concerning the likely rule they just learned.
-Provide feedback in Persian. Give a score out of 100 based on grammatical accuracy.
-Format the score clearly, e.g., Score: 90/100."""
+            # Get current grammar lesson info
+            lesson_info = context.user_data.get('current_grammar_lesson', {})
+            if not lesson_info:
+                await update.message.reply_text("لطفاً ابتدا درس گرامر را شروع کنید.")
+                return
+            
+            exercises_completed = lesson_info.get('exercises_completed', 0)
+            total_score = lesson_info.get('total_score', 0)
+            topic_id = lesson_info.get('topic_id')
+            level = lesson_info.get('level')
+            
+            # Check if all 5 exercises are completed
+            if exercises_completed >= 5:
+                # Calculate average score and mark lesson as completed
+                avg_score = total_score / 5
+                content_manager.mark_grammar_lesson_completed(user_id, level, topic_id, avg_score)
+                
+                # Update progress
+                db.add_section_progress(user_id, 'grammar', level, avg_score)
+                
+                # Check for level up
+                if db.check_and_upgrade_level(user_id):
+                    await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
+                
+                # Show completion message
+                await update.message.reply_text(
+                    f"✅ درس گرامر '{lesson_info['title']}' به پایان رسید!\n\n"
+                    f"میانگین امتیاز شما: {avg_score:.1f}/100\n\n"
+                    f"برای شروع درس بعدی، دوباره دکمه درس گرامر را بزنید."
+                )
+                
+                # Reset state
+                user_states[user_id] = MAIN_MENU
+                context.user_data['current_grammar_lesson'] = {}
+                return
+            
+            # Process the current exercise
+            logger.info(f"Calling OpenAI for GRAMMAR_LESSON exercise {exercises_completed + 1}...")
+            
+            # Construct prompt for AI evaluation
+            prompt = f"""You are an English grammar teacher. A student has learned this grammar rule:
 
-            response = gemini_model.generate_content(prompt)
-            logger.info("Gemini call successful for GRAMMAR_LESSON")
-            feedback = response.text # <-- Get text from Gemini response
+{lesson_info['content']}
+
+The student wrote this sentence: "{message}"
+
+Evaluate the student's sentence based on:
+1. Correct use of the grammar rule (60 points)
+2. Grammatical accuracy (30 points)
+3. Natural English expression (10 points)
+
+Provide feedback in Persian, being encouraging and constructive.
+Format the score clearly at the end, e.g., Score: 85/100.
+
+Focus on the specific grammar rule they just learned."""
+
+            response = openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            logger.info("OpenAI call successful for GRAMMAR_LESSON")
+            feedback = response.choices[0].message.content
 
             # Extract score
-            score = 70
+            score = 70  # Default score
             try:
                 score_part = feedback.split("Score:")[1].split("/")[0].strip()
                 score = int(score_part)
             except Exception:
-                logger.warning("Could not parse score from Gemini feedback.")
+                logger.warning("Could not parse score from OpenAI feedback.")
                 pass
 
-            level = db.get_user_level(user_id)
-            total_grammar = content_manager.get_total_grammar_count(level)
-            increment = 100 / total_grammar if total_grammar else 1
-            db.add_section_progress(user_id, 'grammar', level, increment)
-            if db.check_and_upgrade_level(user_id):
-                await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
-            await update.message.reply_text(feedback)
+            # Update lesson progress
+            exercises_completed += 1
+            total_score += score
+            
+            context.user_data['current_grammar_lesson']['exercises_completed'] = exercises_completed
+            context.user_data['current_grammar_lesson']['total_score'] = total_score
+
+            # Show feedback and next exercise
+            if exercises_completed < 5:
+                next_message = f"{feedback}\n\n"
+                next_message += f"تمرین {exercises_completed + 1} از ۵:\n"
+                next_message += "جمله‌ای دیگر با استفاده از همین قاعده گرامری بنویسید:"
+                await update.message.reply_text(next_message)
+            else:
+                # This was the last exercise, show completion
+                await update.message.reply_text(
+                    f"{feedback}\n\n"
+                    f"🎉 تمام تمرین‌های این درس به پایان رسید!\n\n"
+                    f"میانگین امتیاز شما: {total_score / 5:.1f}/100\n\n"
+                    f"درس گرامر '{lesson_info['title']}' با موفقیت تکمیل شد!"
+                )
+                
         except Exception as e:
             logger.error(f"Error in GRAMMAR_LESSON: {str(e)}", exc_info=True)
             await update.message.reply_text("متأسفانه در بررسی پیام شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
@@ -963,54 +1053,61 @@ Format the score clearly, e.g., Score: 90/100."""
     elif state == CONVERSATION_PRACTICE:
         try:
             user_reply = message.strip()
-            # Check if reply is in English (simple heuristic: contains only a-z, A-Z, common punctuation)
             import re
             if not re.search(r'[a-zA-Z]', user_reply) or re.search(r'[آ-یءضصثقفغعهخحجچشسیبلاتنمکگظطزرذدپو.,!?؛،]', user_reply):
                 await update.message.reply_text("⚠️ لطفاً فقط به انگلیسی پاسخ دهید و به موضوع مکالمه توجه کنید.")
                 return
-            # Check if reply is on-topic (use Gemini to check relevance)
             topic = context.user_data.get('conversation_topic', '')
-            check_prompt = f"Is the following reply relevant to the topic '{topic}'? Reply 'yes' or 'no'.\n\nUser reply: {user_reply}"
-            check_response = gemini_model.generate_content(check_prompt)
-            if 'no' in check_response.text.lower():
-                await update.message.reply_text("⚠️ پاسخ شما به موضوع مکالمه مرتبط نبود. لطفاً درباره موضوع مطرح‌شده صحبت کنید.")
-                return
-            # Add reply to history
+            level = db.get_user_level(user_id)
+            # Initialize conversation state if not present
             if 'conversation_history' not in context.user_data:
                 context.user_data['conversation_history'] = []
-            context.user_data['conversation_history'].append(user_reply)
-            # Count total English sentences
-            all_text = ' '.join(context.user_data['conversation_history'])
-            sentences = re.split(r'[.!?]', all_text)
-            sentences = [s.strip() for s in sentences if len(s.strip().split()) > 2]  # Only count sentences with >2 words
-            if len(sentences) < 8:
-                # Generate a relevant follow-up question
-                followup_prompt = f"You are an English teacher. Continue the conversation on the topic '{topic}'. The student has said: '{user_reply}'. Ask a new, relevant question in English."
-                followup_response = gemini_model.generate_content(followup_prompt)
-                await update.message.reply_text(followup_response.text)
+            if 'conversation_scores' not in context.user_data:
+                context.user_data['conversation_scores'] = []
+            if 'conversation_ai_replies' not in context.user_data:
+                context.user_data['conversation_ai_replies'] = 0
+            # Limit to 4 user replies
+            if len(context.user_data['conversation_history']) >= 4:
+                # End session, calculate average score
+                scores = context.user_data['conversation_scores']
+                avg_score = int(sum(scores) / len(scores)) if scores else 0
+                db.add_section_progress(user_id, 'conversation', level, avg_score)
+                if db.check_and_upgrade_level(user_id):
+                    await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
+                await update.message.reply_text(f"✅ مکالمه به پایان رسید!\nمیانگین امتیاز شما: {avg_score}/100\nبرای شروع مکالمه جدید، دوباره دکمه تمرین مکالمه را بزنید.")
+                # Reset state
+                context.user_data['conversation_history'] = []
+                context.user_data['conversation_scores'] = []
+                context.user_data['conversation_ai_replies'] = 0
+                context.user_data['conversation_topic'] = None
+                user_states[user_id] = MAIN_MENU
                 return
-            # If 8 or more sentences, evaluate the conversation
-            eval_prompt = f"You are an English teacher. Here is a conversation by a student on the topic '{topic}':\n\n{all_text}\n\nPlease provide feedback in Persian and give a total score out of 100 for the student's English usage, fluency, and relevance. Format the score clearly, e.g., Score: 85/100."
-            eval_response = gemini_model.generate_content(eval_prompt)
-            feedback = eval_response.text
-             # Extract score
+            # Score the user's reply
+            score_prompt = f"You are an English teacher. A student at the {level} level replied to the topic '{topic['title']}':\n\n'{user_reply}'\n\nGive a score out of 100 for the reply, considering grammar, fluency, and relevance to the topic. Reply only with: Score: XX/100 and a short feedback in Persian."
+            score_response = openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": score_prompt}]
+            )
+            score_feedback = score_response.choices[0].message.content
             score = 70
             try:
-                score_part = feedback.split("Score:")[1].split("/")[0].strip()
+                score_part = score_feedback.split("Score:")[1].split("/")[0].strip()
                 score = int(score_part)
             except Exception:
                 pass
-            # Update progress
-            total_conv = content_manager.get_total_conversation_count(level)
-            increment = 100 / total_conv if total_conv else 1
-            db.add_section_progress(user_id, 'conversation', level, increment)
-            if db.check_and_upgrade_level(user_id):
-                await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
-            await update.message.reply_text(feedback)
-            # Reset conversation state
-            context.user_data['conversation_history'] = []
-            context.user_data['conversation_topic'] = None
-            user_states[user_id] = MAIN_MENU
+            context.user_data['conversation_scores'].append(score)
+            context.user_data['conversation_history'].append(user_reply)
+            await update.message.reply_text(score_feedback)
+            # AI short reply (max 3 per session)
+            if context.user_data['conversation_ai_replies'] < 3:
+                ai_reply_prompt = f"You are an English teacher. The topic is '{topic['title']}'. The student said: '{user_reply}'. Reply with a short, relevant English sentence to continue the conversation."
+                ai_reply_response = openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": ai_reply_prompt}]
+                )
+                ai_reply = ai_reply_response.choices[0].message.content
+                await update.message.reply_text(ai_reply)
+                context.user_data['conversation_ai_replies'] += 1
         except Exception as e:
             logger.error(f"Error in CONVERSATION_PRACTICE: {str(e)}", exc_info=True)
             await update.message.reply_text("متأسفانه در پردازش پیام شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
@@ -1023,9 +1120,12 @@ Format the score clearly, e.g., Score: 90/100."""
 The student sent this message outside of a specific task: "{message}"
 Respond briefly and politely in Persian. Gently suggest they use the menu buttons (تمرین لغات, درس گرامر, تمرین مکالمه, سنجش سطح) to practice specific skills."""
 
-            response = gemini_model.generate_content(prompt)
+            response = openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}]
+            )
             logger.info("Gemini call successful for MAIN_MENU")
-            reply = response.text # <-- Get text from Gemini response
+            reply = response.choices[0].message.content
             # The await needs to be inside the try block if it depends on 'reply'
             await update.message.reply_text(reply)
         # This except corresponds to the try block above
@@ -1371,8 +1471,12 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
     )
 
-    # Create application without proxy for now (add back if needed)
-    application = Application.builder().token(TOKEN).build()
+    # Create application with timeout settings to handle network issues
+    # If you're in Iran and need proxy, uncomment and configure the proxy settings below:
+    # proxy_url = "http://your_proxy:port"
+    # application = Application.builder().token(TOKEN).proxy_url(proxy_url).read_timeout(30).write_timeout(30).connect_timeout(30).build()
+    
+    application = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).build()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
