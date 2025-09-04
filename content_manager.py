@@ -90,14 +90,29 @@ class ContentManager:
         except Exception as e:
             print(f"Error initializing content database: {e}")
     
-    def get_vocabulary_for_level(self, level, count=5):
-        """Get vocabulary words for a specific level."""
+    def get_vocabulary_for_level(self, level, count=5, user_id=None):
+        """Get vocabulary words for a specific level, excluding already studied words."""
         try:
-            # First try from database
-            self.cursor.execute(
-                "SELECT word, definition, example FROM vocabulary_words WHERE level = ? ORDER BY RANDOM() LIMIT ?",
-                (level, count)
-            )
+            # Get studied words for this user if user_id provided
+            studied_words = set()
+            if user_id:
+                studied_words = self.get_studied_words(user_id)
+            
+            # First try from database - exclude studied words
+            if studied_words:
+                placeholders = ','.join('?' * len(studied_words))
+                query = f"""
+                    SELECT word, definition, example 
+                    FROM vocabulary_words 
+                    WHERE level = ? AND word NOT IN ({placeholders})
+                    ORDER BY RANDOM() LIMIT ?
+                """
+                params = [level] + list(studied_words) + [count]
+            else:
+                query = "SELECT word, definition, example FROM vocabulary_words WHERE level = ? ORDER BY RANDOM() LIMIT ?"
+                params = [level, count]
+                
+            self.cursor.execute(query, params)
             words = []
             for row in self.cursor.fetchall():
                 words.append({
@@ -106,13 +121,20 @@ class ContentManager:
                     'example': row[2]
                 })
             
-            # If not enough words in database, use fallback
+            # If not enough words in database, use fallback (excluding studied words)
             if len(words) < count:
-                fallback_words = self.get_fallback_vocabulary(level, count - len(words))
-                words.extend(fallback_words)
+                fallback_words = self.get_fallback_vocabulary(level, count * 2)  # Get more to filter
                 
-                # Try to save fallback words to database for future use
-                for word in fallback_words:
+                # Filter out studied words from fallback
+                if user_id:
+                    fallback_words = [w for w in fallback_words if w['word'] not in studied_words]
+                
+                # Take only what we need
+                needed_count = count - len(words)
+                words.extend(fallback_words[:needed_count])
+                
+                # Try to save new fallback words to database for future use
+                for word in fallback_words[:needed_count]:
                     try:
                         self.cursor.execute(
                             "INSERT INTO vocabulary_words (word, definition, example, level) VALUES (?, ?, ?, ?)",
@@ -128,7 +150,11 @@ class ContentManager:
         except Exception as e:
             print(f"Error getting vocabulary for level {level}: {e}")
             # Fallback to static lists
-            return self.get_fallback_vocabulary(level, count)
+            fallback_words = self.get_fallback_vocabulary(level, count)
+            if user_id:
+                studied_words = self.get_studied_words(user_id)
+                fallback_words = [w for w in fallback_words if w['word'] not in studied_words]
+            return fallback_words[:count]
             
     def get_grammar_lesson_for_level(self, user_id, level):
         """Get the next uncompleted grammar lesson for a user at a specific level."""
@@ -138,16 +164,16 @@ class ContentManager:
             
             # First try to get lessons from database
             self.cursor.execute(
-                "SELECT title, content, level FROM grammar_lessons WHERE level = ? ORDER BY id",
+                "SELECT id, title, content, level FROM grammar_lessons WHERE level = ? ORDER BY id",
                 (level,)
             )
             db_lessons = []
             for row in self.cursor.fetchall():
                 db_lessons.append({
-                    'title': row[0],
-                    'content': row[1],
-                    'level': row[2],
-                    'topic_id': len(db_lessons) + 1  # Assign topic_id based on order
+                    'title': row[1],
+                    'content': row[2],
+                    'level': row[3],
+                    'topic_id': row[0]  # Use database ID as topic_id for consistency
                 })
             
             # If database has lessons, use them
@@ -162,8 +188,8 @@ class ContentManager:
                 if lesson['topic_id'] not in completed_lessons:
                     return lesson
             
-            # If all lessons are completed, return the first one (cycle back)
-            return all_lessons[0] if all_lessons else None
+            # If all lessons are completed, return None to indicate completion
+            return None
             
         except Exception as e:
             print(f"Error getting grammar lesson for level: {e}")
@@ -191,7 +217,8 @@ class ContentManager:
                 (user_id, level, topic_id)
             )
             
-            if self.user_cursor.fetchone():
+            existing = self.user_cursor.fetchone()
+            if existing:
                 # Update existing record
                 self.user_cursor.execute(
                     "UPDATE user_grammar SET score = ?, completed_at = ? WHERE user_id = ? AND level = ? AND topic_id = ?",
@@ -259,72 +286,6 @@ class ContentManager:
             self.user_conn.commit()
         except Exception as e:
             print(f"Error resetting grammar seen for user {user_id}: {e}")
-
-    def get_mixed_assessment_questions(self, total_count=20):
-        """Get a mix of assessment questions across different levels and types."""
-        try:
-            questions = []
-            levels = ['beginner', 'amateur', 'intermediate', 'advanced']
-            
-            # Fetch all questions from the database first
-            self.cursor.execute(
-                "SELECT question, options, answer, level FROM assessment_questions ORDER BY id"
-            )
-            all_db_questions = []
-            for row in self.cursor.fetchall():
-                all_db_questions.append({
-                    'question': row[0],
-                    'options': row[1].split('|'),
-                    'answer': row[2],
-                    'level': row[3]
-                })
-
-            # If no questions in DB, use only fallback
-            if not all_db_questions:
-                all_db_questions = self.get_fallback_assessment_questions(200) # Get a large set from fallback
-
-            # Shuffle all available questions (from DB or fallback) and pick unique ones
-            random.shuffle(all_db_questions)
-            
-            selected_questions = []
-            seen_question_texts = set()
-            
-            # Distribute questions by level if possible, else just pick unique ones
-            per_level = total_count // len(levels)
-            level_counts = {lvl: 0 for lvl in levels}
-            
-            for q_data in all_db_questions:
-                if len(selected_questions) >= total_count:
-                    break
-                
-                q_text = q_data['question'].lower().strip()
-                q_level = q_data['level']
-                
-                if q_text not in seen_question_texts and level_counts[q_level] < per_level + (total_count % len(levels) if q_level == levels[-1] else 0): # Distribute remaining
-                    selected_questions.append(q_data)
-                    seen_question_texts.add(q_text)
-                    level_counts[q_level] += 1
-            
-            # If still not enough, add more unique questions regardless of level distribution
-            if len(selected_questions) < total_count:
-                for q_data in all_db_questions:
-                    if len(selected_questions) >= total_count:
-                        break
-                    q_text = q_data['question'].lower().strip()
-                    if q_text not in seen_question_texts:
-                        selected_questions.append(q_data)
-                        seen_question_texts.add(q_text)
-
-            # Ensure the final list is exactly total_count and randomly shuffled
-            random.shuffle(selected_questions)
-            return selected_questions[:total_count]
-            
-        except Exception as e:
-            print(f"Error getting mixed assessment questions: {e}")
-            # Fallback to general static questions if everything else fails
-            fallback_q = self.get_fallback_assessment_questions(total_count)
-            random.shuffle(fallback_q)
-            return fallback_q[:total_count]
 
     def get_studied_words(self, user_id):
         """Get a set of words a user has already studied."""
@@ -576,6 +537,11 @@ class ContentManager:
                 
                 q_text = q_data['question'].lower().strip()
                 q_level = q_data['level']
+                
+                # Skip questions with invalid levels
+                if q_level not in level_counts:
+                    print(f"Warning: Skipping question with invalid level '{q_level}'")
+                    continue
                 
                 if q_text not in seen_question_texts and level_counts[q_level] < per_level + (total_count % len(levels) if q_level == levels[-1] else 0): # Distribute remaining
                     selected_questions.append(q_data)

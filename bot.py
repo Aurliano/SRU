@@ -8,6 +8,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 import os
+import re
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -19,6 +20,46 @@ import json
 # Import our custom modules
 from user_db import UserDatabase
 from content_manager import ContentManager
+
+# Validation function for user inputs
+def validate_user_input(text: str, context_word: str = None) -> tuple[bool, str]:
+    """
+    Validate user input for English learning exercises
+    Returns: (is_valid, reason_if_invalid)
+    """
+    # Check for minimum length
+    if len(text.strip()) < 3:
+        return False, "پاسخ شما خیلی کوتاه است."
+    
+    # Check for random characters or numbers only
+    if re.search(r'^[0-9!@#$%^&*()_+=\[\]{}|;:,.<>?/~`-]+$', text.strip()):
+        return False, "لطفاً از کلمات انگلیسی معنی‌دار استفاده کنید."
+    
+    # Check for excessive repetition of characters
+    if re.search(r'(.)\1{4,}', text):  # 5 or more same characters in a row
+        return False, "از تکرار غیرضروری حروف خودداری کنید."
+    
+    # Check if it contains at least some English letters
+    if not re.search(r'[a-zA-Z]', text):
+        return False, "لطفاً از حروف انگلیسی استفاده کنید."
+    
+    # Check for gibberish patterns (random character sequences)
+    words = text.split()
+    valid_words = 0
+    for word in words:
+        # Simple heuristic: valid English words usually have vowels
+        if re.search(r'[aeiouAEIOU]', word) and len(word) > 1:
+            valid_words += 1
+    
+    # If less than 50% of words seem valid, likely gibberish
+    if len(words) > 1 and valid_words / len(words) < 0.5:
+        return False, "لطفاً کلمات انگلیسی معنی‌دار استفاده کنید."
+    
+    # Check for context word if provided (for vocabulary)
+    if context_word and context_word.lower() not in text.lower():
+        return False, f"لطفاً از کلمه '{context_word}' در جمله خود استفاده کنید."
+    
+    return True, ""
 
 # Load environment variables
 load_dotenv()
@@ -204,13 +245,13 @@ async def send_assessment_question(message: Message, context: ContextTypes.DEFAU
         total = len(questions)
         percentage = (correct / total) * 100 if total > 0 else 0
 
-        # Determine level
+        # Determine level based on new scoring system
         level = "beginner"
-        if percentage >= 80:
-             level = "advanced"
-        elif percentage >= 60:
-             level = "intermediate"
-        elif percentage >= 40:
+        if percentage > 81:
+            level = "advanced"
+        elif percentage >= 50:
+            level = "intermediate"
+        elif percentage >= 25:
             level = "amateur"
 
         # --- Add Logging Here ---
@@ -218,121 +259,128 @@ async def send_assessment_question(message: Message, context: ContextTypes.DEFAU
         logger.info(f"Attempting to update level in DB for user {user_id} to {level}...")
         # --- End Add Logging ---
 
-        try: # Add try-except around DB operations
-             # Get current level before update
-             current_level = db.get_user_level(user_id)
-             logger.info(f"User {user_id} current level before update: '{current_level}'")
-             
-             # Update user level in database - now returns boolean success indicator
-             success = db.update_user_level(user_id, level)
-             
-             if not success:
-                 logger.warning(f"DB update_user_level returned failure for user {user_id}. Trying direct SQL update...")
-                 
-                 # First try the force_update_level method
-                 force_success = db.force_update_level(user_id, level)
-                 
-                 if not force_success:
-                     logger.error(f"Even force_update_level failed for user {user_id}. Trying raw SQL as final resort...")
-                     
-                     # Try direct update as a absolute last resort
-                     try:
-                         import sqlite3
-                         conn = sqlite3.connect("user_data.db")
-                         cursor = conn.cursor()
-                         
-                         # First check if user exists
-                         cursor.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (user_id,))
-                         exists = cursor.fetchone()[0] > 0
-                         
-                         if not exists:
-                             # Create user if doesn't exist
-                             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                             cursor.execute(
-                                 "INSERT INTO users (user_id, username, level, join_date, last_active) VALUES (?, ?, ?, ?, ?)",
-                                 (user_id, f"user_{user_id}", level, now, now)
-                             )
-                             logger.info(f"Direct SQL: Created new user {user_id} with level '{level}'")
-                         else:
-                             # Update existing user
-                             cursor.execute("UPDATE users SET level = ? WHERE user_id = ?", (level, user_id))
-                             logger.info(f"Direct SQL: Updated existing user {user_id} to level '{level}'")
-                         
-                         conn.commit()
-                         
-                         # Verify direct update
-                         cursor.execute("SELECT level FROM users WHERE user_id = ?", (user_id,))
-                         direct_result = cursor.fetchone()
-                         logger.info(f"Direct SQL: After update, level for user {user_id} is: '{direct_result[0] if direct_result else 'unknown'}'")
-                         conn.close()
-                     except Exception as direct_e:
-                         logger.error(f"ALL UPDATE METHODS FAILED! Final error: {direct_e}")
-             
-             # Double-check that level was updated by reading it back
-             updated_level = db.get_user_level(user_id)
-             logger.info(f"Final check: User {user_id} level after all update attempts: '{updated_level}'")
-             
-             # Save overall progress - make extra sure this succeeds
-             progress_success = False
-             try:
-                 # Use the specialized save method for assessment results
-                 logger.info(f"Saving assessment progress for user {user_id}, score: {percentage}%")
-                 progress_success, error = db.save_assessment_result(user_id, percentage)
-                 
-                 if not progress_success:
-                     logger.error(f"Failed to save assessment result: {error}")
-                     # The save_assessment_result method already tries all possible methods
-             except Exception as progress_e:
-                 logger.error(f"Error saving assessment progress: {progress_e}", exc_info=True)
-             
-             # Log the final result of progress saving
-             if progress_success:
-                 logger.info(f"Assessment progress successfully saved for user {user_id}")
-             else:
-                 logger.error(f"FAILED to save assessment progress for user {user_id}")
-                 # Notify the user about the issue
-                 try:
-                     await context.bot.send_message(
-                         chat_id=chat_id,
-                         text="⚠️ توجه: مشکلی در ذخیره‌سازی نتیجه آزمون شما پیش آمد. برای رفع مشکل، لطفاً دستور /deep_debug را ارسال کنید."
-                     )
-                 except Exception:
-                     pass
-             
-             # Check if progress table exists and has correct structure
-             try:
-                 debug_info = db.debug_database(user_id)
-                 if 'progress' in debug_info['tables']:
-                     logger.info("Progress table exists in database")
-                 else:
-                     logger.error("Progress table does not exist in database!")
-             except Exception as debug_e:
-                 logger.error(f"Error checking database structure: {debug_e}")
+        try:
+            # Get current level before update
+            current_level = db.get_user_level(user_id)
+            logger.info(f"User {user_id} current level before update: '{current_level}'")
+            
+            # Update user level in database - now returns boolean success indicator
+            success = db.update_user_level(user_id, level)
+            
+            if not success:
+                logger.warning(f"DB update_user_level returned failure for user {user_id}. Trying direct SQL update...")
+                
+                # First try the force_update_level method
+                force_success = db.force_update_level(user_id, level)
+                
+                if not force_success:
+                    logger.error(f"Even force_update_level failed for user {user_id}. Trying raw SQL as final resort...")
+                    
+                    # Try direct update as a absolute last resort
+                    try:
+                        import sqlite3
+                        conn = sqlite3.connect("user_data.db")
+                        cursor = conn.cursor()
+                        
+                        # First check if user exists
+                        cursor.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (user_id,))
+                        exists = cursor.fetchone()[0] > 0
+                        
+                        if not exists:
+                            # Create user if doesn't exist
+                            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            cursor.execute(
+                                "INSERT INTO users (user_id, username, level, join_date, last_active) VALUES (?, ?, ?, ?, ?)",
+                                (user_id, f"user_{user_id}", level, now, now)
+                            )
+                            logger.info(f"Direct SQL: Created new user {user_id} with level '{level}'")
+                        else:
+                            # Update existing user
+                            cursor.execute("UPDATE users SET level = ? WHERE user_id = ?", (level, user_id))
+                            logger.info(f"Direct SQL: Updated existing user {user_id} to level '{level}'")
+                        
+                        conn.commit()
+                        
+                        # Verify direct update
+                        cursor.execute("SELECT level FROM users WHERE user_id = ?", (user_id,))
+                        direct_result = cursor.fetchone()
+                        logger.info(f"Direct SQL: After update, level for user {user_id} is: '{direct_result[0] if direct_result else 'unknown'}'")
+                        conn.close()
+                    except Exception as direct_e:
+                        logger.error(f"ALL UPDATE METHODS FAILED! Final error: {direct_e}")
+            
+            # Double-check that level was updated by reading it back
+            updated_level = db.get_user_level(user_id)
+            logger.info(f"Final check: User {user_id} level after all update attempts: '{updated_level}'")
+            
+            # Save overall progress - make extra sure this succeeds
+            progress_success = False
+            try:
+                # Use the specialized save method for assessment results
+                logger.info(f"Saving assessment progress for user {user_id}, score: {percentage}%")
+                progress_success, error = db.save_assessment_result(user_id, percentage)
+                
+                if not progress_success:
+                    logger.error(f"Failed to save assessment result: {error}")
+                    # The save_assessment_result method already tries all possible methods
+            except Exception as progress_e:
+                logger.error(f"Error saving assessment progress: {progress_e}", exc_info=True)
+            
+            # Log the final result of progress saving
+            if progress_success:
+                logger.info(f"Assessment progress successfully saved for user {user_id}")
+            else:
+                logger.error(f"FAILED to save assessment progress for user {user_id}")
+                # Notify the user about the issue
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="⚠️ توجه: مشکلی در ذخیره‌سازی نتیجه آزمون شما پیش آمد. برای رفع مشکل، لطفاً دستور /deep_debug را ارسال کنید."
+                    )
+                except Exception:
+                    pass
+            
+            # Check if progress table exists and has correct structure
+            try:
+                debug_info = db.debug_database(user_id)
+                if 'progress' in debug_info['tables']:
+                    logger.info("Progress table exists in database")
+                else:
+                    logger.error("Progress table does not exist in database!")
+            except Exception as debug_e:
+                logger.error(f"Error checking database structure: {debug_e}")
 
-             # Reset state
-             user_states[user_id] = MAIN_MENU
+            # Reset state
+            user_states[user_id] = MAIN_MENU
 
-             await context.bot.send_message(
-                 chat_id=chat_id,
-                 text=(
-                     f"✅ ارزیابی سطح شما به پایان رسید!\n\n"
-                     f"نتیجه شما: {correct} از {total} ({percentage:.1f}%)\n"
-                     f"سطح تخمینی شما: {levels_persian.get(level, 'نامشخص')}\n\n"
-                     f"محتوای آموزشی از این پس متناسب با سطح شما ({levels_persian.get(updated_level, 'نامشخص')}) ارائه خواهد شد.\n\n"
-                     f"اگر سطح شما به‌درستی به‌روزرسانی نشده، دستور /fix_level را ارسال کنید تا به‌طور خودکار سطح شما بر اساس نتیجه این آزمون تنظیم شود.\n\n"
-                     f"اگر با مشکلی مواجه شدید، می‌توانید از دستور /deep_debug برای عیب‌یابی استفاده کنید."
-                 )
-             )
+            # Show main menu keyboard after assessment
+            keyboard = [
+                [KeyboardButton("📚 تمرین لغات"), KeyboardButton("📝 درس گرامر")],
+                [KeyboardButton("🗣️ تمرین مکالمه"), KeyboardButton("📊 پیشرفت من")],
+                [KeyboardButton("🧪 سنجش سطح"), KeyboardButton("❓ راهنما")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"🎉 **ارزیابی سطح شما به پایان رسید!**\n\n"
+                    f"📊 **نتیجه شما:** {correct} از {total} ({percentage:.1f}%)\n\n"
+                    f"🏆 **سطح تعیین شده:** {updated_level}\n\n"
+                    f"✅ سطح شما با موفقیت به‌روزرسانی شد و محتوای آموزشی از این پس متناسب با سطح جدید شما ارائه خواهد شد.\n\n"
+                    f"🚀 برای شروع یادگیری، از دکمه‌های زیر استفاده کنید:"
+                ),
+                reply_markup=reply_markup
+            )
 
-        except Exception as db_e: # Catch potential DB errors
-             logger.error(f"Database error during level update/progress add for user {user_id}: {db_e}", exc_info=True)
-             try: # Try to inform the user
-                 await context.bot.send_message(chat_id=chat_id, text="مشکلی در ذخیره سازی نتیجه آزمون شما پیش آمد. لطفا دوباره تلاش کنید.")
-             except Exception:
-                 pass
-             # Optionally reset state even on DB error? Or leave in assessment state?
-             # For now, reset state:
-             user_states[user_id] = MAIN_MENU
+        except Exception as db_e:
+            logger.error(f"Database error during level update/progress add for user {user_id}: {db_e}", exc_info=True)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text="مشکلی در ذخیره سازی نتیجه آزمون شما پیش آمد. لطفا دوباره تلاش کنید.")
+            except Exception:
+                pass
+            # Reset state even on DB error
+            user_states[user_id] = MAIN_MENU
 
     db.set_assessment_done(user_id, True)
 
@@ -455,12 +503,32 @@ async def vocabulary_practice(update: Update, context: ContextTypes.DEFAULT_TYPE
     words_studied = db.get_words_studied_count(user_id)
     
     # Check if a test is due (after every 20 words)
-    if words_studied > 0 and words_studied % 20 == 0 and not context.user_data.get('test_completed'):
-        # Redirect to vocabulary test
-        return await vocabulary_test(update, context)
+    if words_studied > 0 and words_studied % 20 == 0:
+        # Check if user has already taken the test for this batch
+        last_test_words = (words_studied // 20) * 20
+        current_test_words = words_studied
+        
+        if last_test_words == current_test_words and not context.user_data.get('test_completed'):
+            # Redirect to vocabulary test
+            return await vocabulary_test(update, context)
+        elif context.user_data.get('test_completed'):
+            # Reset test_completed flag for next batch
+            context.user_data['test_completed'] = False
     
-    # Get words for the user's level - now storing them in context for later reference
-    words = content_manager.get_vocabulary_for_level(level, 5)
+    # Get words for the user's level - excluding already studied words
+    words = content_manager.get_vocabulary_for_level(level, 5, user_id)
+    
+    # Check if no new words are available
+    if not words:
+        await update.message.reply_text(
+            f"🎉 تبریک! شما همه واژگان سطح {levels_persian.get(level, level)} را تمرین کرده‌اید!\n\n"
+            f"برای ادامه یادگیری:\n"
+            f"• سایر بخش‌ها (گرامر، مکالمه) را تمرین کنید\n"
+            f"• منتظر ارتقاء به سطح بعدی باشید\n"
+            f"• دوباره آزمون سنجش سطح دهید"
+        )
+        return
+    
     context.user_data['current_vocab_words'] = words
     context.user_data['current_vocab_index'] = 0
     
@@ -500,11 +568,7 @@ async def send_vocabulary_word(message: Message, context: ContextTypes.DEFAULT_T
     message_text += f"💡 مثال: {word_data['example']}\n\n"
     message_text += "لطفاً یک جمله جدید و متفاوت با استفاده از این لغت بنویسید (جمله شما نباید مشابه مثال بالا باشد)."
     
-    # Add skip button for current word
-    keyboard = [[InlineKeyboardButton("⏭️ رد کردن این لغت", callback_data=f"skip_vocab_{current_index}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await message.reply_text(message_text, reply_markup=reply_markup)
+    await message.reply_text(message_text)
 
 async def handle_vocabulary_practice(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str):
     """Handle user response to vocabulary practice."""
@@ -533,21 +597,38 @@ async def handle_vocabulary_practice(update: Update, context: ContextTypes.DEFAU
     
     current_word = words[current_index]['word']
     
+    # Validate user input before sending to AI
+    is_valid, error_reason = validate_user_input(message, current_word)
+    if not is_valid:
+        await update.message.reply_text(
+            f"⚠️ {error_reason}\n\n"
+            f"💡 لطفاً جمله معنی‌داری با کلمه '{current_word}' بنویسید.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 بازگشت به منوی اصلی", callback_data="vocab_exit")
+            ]])
+        )
+        return
+    
     try:
-        logger.info(f"Calling Gemini for VOCABULARY_PRACTICE...")
-        # Construct prompt for Gemini - updated to be more lenient with scoring
-        prompt = f"""You are an English teacher. A student has been given a vocabulary word and asked to use it in a sentence.
+        logger.info(f"Calling OpenAI for VOCABULARY_PRACTICE...")
+        # Construct prompt for OpenAI - strict and accurate scoring
+        prompt = f"""You are a strict English teacher. A student has been given a vocabulary word and asked to use it in a sentence.
 Vocabulary word: "{current_word}"
 Student's sentence: "{message}"
 
-Evaluate the student's sentence based on these criteria:
-1. Did they use the vocabulary word correctly? (50 points)
-2. Is the sentence grammatically correct? (30 points)
-3. Is the sentence original and creative? (20 points)
+IMPORTANT EVALUATION RULES:
+- If the sentence contains irrelevant words, random characters, or gibberish: Score 0-20
+- If the vocabulary word is missing or used incorrectly: Maximum score 30
+- If the sentence is grammatically incorrect: Deduct 20-40 points
+- Only give high scores (80+) for genuinely good sentences
 
-Be generous with scoring - if the student made a good attempt, they can get full points in that category.
-Provide feedback in Persian, being encouraging and constructive.
-Format the score clearly at the end, e.g., Score: 85/100."""
+Evaluate based on these criteria:
+1. Correct usage of vocabulary word "{current_word}" (50 points)
+2. Grammar and sentence structure (30 points)
+3. Meaning and coherence (20 points)
+
+Be strict and accurate in scoring. Provide constructive feedback in Persian.
+Format the score clearly at the end, e.g., Score: 75/100."""
 
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -580,25 +661,23 @@ Format the score clearly at the end, e.g., Score: 85/100."""
         
         await update.message.reply_text(feedback, reply_markup=reply_markup)
         
-        # --- Weighted progress calculation ---
-        # Number of unique words studied for this level
-        words_studied = db.get_words_studied_count(user_id)
+        # --- Incremental progress calculation ---
+        # Calculate progress increment for completing one vocabulary word
+        level = db.get_user_level(user_id)
         total_vocab = content_manager.get_total_vocabulary_count(level)
-        studied_ratio = min(words_studied / total_vocab, 1.0) if total_vocab else 0
-        avg_score = db.get_avg_vocab_score(user_id, level)
-        # Weighted: 60% for coverage, 40% for avg score
-        weighted_progress = (studied_ratio * 60) + (avg_score * 0.4)
-        db.add_section_progress(user_id, 'vocabulary', level, weighted_progress)
+        if total_vocab > 0:
+            # Base progress increment for completing one word
+            progress_increment = (1 / total_vocab) * 100
+            
+            # Apply score multiplier (70% = base, 100% = full increment)
+            score_multiplier = max(0.7, score / 100)
+            final_increment = progress_increment * score_multiplier
+            
+            db.add_section_progress(user_id, 'vocabulary', level, final_increment)
         if db.check_and_upgrade_level(user_id):
             await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
     except Exception as e:
         logger.error(f"Error in VOCABULARY_PRACTICE: {str(e)}", exc_info=True)
-        level = db.get_user_level(user_id)
-        total_vocab = content_manager.get_total_vocabulary_count(level)
-        studied_ratio = min(words_studied / total_vocab, 1.0) if total_vocab else 0
-        avg_score = db.get_avg_vocab_score(user_id, level)
-        weighted_progress = (studied_ratio * 60) + (avg_score * 0.4)
-        db.add_section_progress(user_id, 'vocabulary', level, weighted_progress)
         await update.message.reply_text("متأسفانه در بررسی پیام شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
 
 async def vocabulary_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -616,14 +695,19 @@ async def vocabulary_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await send_vocab_test_question(update.message, context)
 
-    # Get the next batch of 20 untested words for this user and level
-    test_words = db.get_next_untested_words(user_id, level, 20)
+    # Calculate which test number this should be (1-5 for each level)
+    words_studied = db.get_words_studied_count(user_id)
+    test_number = (words_studied // 20) % 5 + 1  # Cycles through 1-5
+    
+    # Get recent studied words for this test (last 20 studied words)
+    test_words = db.get_recent_studied_words(user_id, 20)
     if not test_words or len(test_words) < 20:
         await update.message.reply_text(
-            "برای شرکت در آزمون لغت باید حداقل ۲۰ لغت جدید تمرین کرده باشید که قبلاً در آزمون شرکت داده نشده‌اند."
+            "برای شرکت در آزمون لغت باید حداقل ۲۰ لغت تمرین کرده باشید."
             " لطفاً ابتدا لغات بیشتری تمرین کنید تا آزمون فعال شود."
         )
-        # Redirect back to vocabulary practice
+        # Set test as completed to avoid infinite loop
+        context.user_data['test_completed'] = True
         return await vocabulary_practice(update, context)
 
     # Create a multiple choice test
@@ -636,7 +720,15 @@ async def vocabulary_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[user_id] = VOCABULARY_TEST
 
     await update.message.reply_text(
-        "🧪 آزمون لغت\n\nبه آزمون لغت خوش آمدید!\nدر این آزمون ۲۰ سوال از لغاتی که اخیراً تمرین کرده‌اید از شما پرسیده می‌شود. برای هر لغت، معنی صحیح را از بین گزینه‌ها انتخاب کنید.\n\nنکته: نتیجه آزمون در پیشرفت شما ثبت خواهد شد. موفق باشید!"
+        f"""🧪 **آزمون لغت شماره {test_number}** (سطح {levels_persian.get(level, level)})
+
+📚 در این آزمون ۲۰ سوال از لغاتی که اخیراً تمرین کرده‌اید از شما پرسیده می‌شود. 
+
+🎯 برای هر لغت، معنی صحیح را از بین گزینه‌ها انتخاب کنید.
+
+📊 نتیجه آزمون در پیشرفت شما ثبت خواهد شد.
+
+🍀 موفق باشید!"""
     )
 
     # Send the first question
@@ -655,25 +747,39 @@ async def send_vocab_test_question(message: Message, context: ContextTypes.DEFAU
         total = len(test_words)
         score = (correct / total) * 100 if total > 0 else 0
         level = db.get_user_level(user_id)
-        # Update progress
+        # Update assessment progress
         db.add_section_progress(user_id, 'assessment', level, score)
         # Mark these words as tested
         db.mark_words_tested(user_id, [w['word'] for w in test_words])
-        # Update vocabulary progress after test
-        words_studied = db.get_words_studied_count(user_id)
+        # Update vocabulary progress after test - based on test performance
         total_vocab = content_manager.get_total_vocabulary_count(level)
-        studied_ratio = min(words_studied / total_vocab, 1.0) if total_vocab else 0
-        avg_score = db.get_avg_vocab_score(user_id, level)
-        weighted_progress = (studied_ratio * 60) + (avg_score * 0.4)
-        db.add_section_progress(user_id, 'vocabulary', level, weighted_progress)
-        context.user_data['test_completed'] = False  # Reset so next 20 triggers test again
+        if total_vocab > 0:
+            # Test covers 20 words, so calculate increment for batch
+            test_words_count = len(test_words)
+            batch_increment = (test_words_count / total_vocab) * 100
+            
+            # Apply score multiplier for test performance
+            score_multiplier = max(0.5, score / 100)  # Minimum 50% for completing test
+            final_increment = batch_increment * score_multiplier
+            
+            db.add_section_progress(user_id, 'vocabulary', level, final_increment)
+        context.user_data['test_completed'] = True  # Mark test as completed
+        
+        # Calculate test number for display
+        words_studied = db.get_words_studied_count(user_id)
+        test_number = (words_studied // 20) % 5 + 1
+        
         # Reset state
         user_states[user_id] = MAIN_MENU
-        result_text = (
-            f"✅ آزمون لغت به پایان رسید!\n\n"
-            f"نتیجه شما: {correct} از {total} ({score:.1f}%)\n\n"
-            f"می‌توانید به تمرین لغت ادامه دهید یا به منوی اصلی بازگردید."
-        )
+        result_text = f"""🎯 **آزمون لغت شماره {test_number} تکمیل شد!**
+
+📊 **نتایج شما:**
+✅ پاسخ‌های صحیح: {correct} از {total}
+📈 درصد موفقیت: {score:.1f}%
+
+💪 پیشرفت شما در بخش واژگان به‌روزرسانی شد!
+
+🔄 برای ادامه یادگیری، از دکمه‌های زیر استفاده کنید:"""
         # Show buttons for next actions
         keyboard = [
             [InlineKeyboardButton("📚 بازگشت به تمرین لغت", callback_data="vocab_practice")],
@@ -737,17 +843,7 @@ async def handle_vocab_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # Go back to vocabulary practice
         await vocabulary_practice(update, context)
 
-    elif callback_data.startswith("skip_vocab_"):
-        # Skip current word
-        try:
-            # Extract index
-            index = int(callback_data.split("_")[2])
-            context.user_data['current_vocab_index'] = index + 1
-            # Send next word
-            await send_vocabulary_word(query.message, context)
-        except Exception as e:
-            logger.error(f"Error skipping vocabulary word: {e}")
-            await query.message.reply_text("مشکلی در رد کردن لغت پیش آمد. لطفاً دوباره تلاش کنید.")
+
 
     elif callback_data.startswith("vocab_test_"):
         # Handle test answer
@@ -807,7 +903,13 @@ async def grammar_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lesson = content_manager.get_grammar_lesson_for_level(user_id, level)
     
     if not lesson:
-        await update.message.reply_text("متأسفانه در حال حاضر درس گرامر در دسترس نیست.")
+        await update.message.reply_text(
+            f"🎉 تبریک! شما همه دروس گرامر سطح {levels_persian.get(level, level)} را تکمیل کرده‌اید!\n\n"
+            f"برای ادامه یادگیری، می‌توانید:\n"
+            f"• سایر بخش‌ها (لغات، مکالمه) را تمرین کنید\n"
+            f"• منتظر ارتقاء به سطح بعدی باشید\n"
+            f"• دوباره آزمون سنجش سطح دهید"
+        )
         return
     
     # Store lesson info in context for exercises
@@ -824,8 +926,8 @@ async def grammar_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message = f"📝 درس گرامر: {lesson['title']} (سطح {level})\n\n"
     message += f"{lesson['content']}\n\n"
-    message += "حالا ۵ تمرین برای شما آماده می‌کنم. لطفاً برای هر تمرین، جمله‌ای با استفاده از این قاعده گرامری بنویسید.\n\n"
-    message += "تمرین ۱ از ۵:\n"
+    message += "حالا ۲ تمرین برای شما آماده می‌کنم. لطفاً برای هر تمرین، جمله‌ای با استفاده از این قاعده گرامری بنویسید.\n\n"
+    message += "تمرین ۱ از ۲:\n"
     message += "جمله‌ای با استفاده از قاعده گرامری که یاد گرفتید بنویسید:"
     
     await update.message.reply_text(message)
@@ -848,10 +950,17 @@ async def conversation_practice(update: Update, context: ContextTypes.DEFAULT_TY
 
     # If this is the first message, send the topic and ask for a reply
     if not context.user_data['conversation_history']:
-        message = f"🗣️ موضوع مکالمه (سطح {level}):\n\n"
-        message += f"📝 {topic_data['title']}\n"
-        message += f"💡 {topic_data['description']}\n\n"
-        message += f"💬 شروع کنید: {topic_data['starter']}"
+        message = f"""🗣️ **تمرین مکالمه** (سطح {levels_persian.get(level, level)})
+
+📝 **موضوع:** {topic_data['title']}
+💡 **توضیحات:** {topic_data['description']}
+
+🎯 **شما ۴ پیام انگلیسی خواهید فرستاد و هر پیام داوری خواهد شد**
+
+💬 **پیام ۱ خود را با این جمله شروع کنید:**
+"{topic_data['starter']}"
+
+⚠️ **نکته:** لطفاً فقط به انگلیسی پاسخ دهید."""
         await update.message.reply_text(message)
         return
     
@@ -864,21 +973,23 @@ async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Get user level
     level = db.get_user_level(user_id)
+    level_persian = levels_persian.get(level, level)
     
     # Get progress data
     progress = db.get_user_progress(user_id)
     
-    # Create progress bars
+    # Create progress bars for current level
     categories = {
         "vocabulary": "لغات",
         "grammar": "گرامر",
-        "conversation": "مکالمه",
-        "assessment": "ارزیابی"
+        "conversation": "مکالمه"
     }
     
     message = "📊 گزارش پیشرفت شما\n\n"
-    message += f"سطح فعلی: {level}\n\n"
+    message += f"🏆 سطح فعلی: {level_persian}\n\n"
     
+    # Show progress for current level
+    current_level_progress = []
     for category, persian_name in categories.items():
         score = progress[category][level]
         bar_length = 10
@@ -886,8 +997,31 @@ async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bar = "🟩" * filled_length + "⬜" * (bar_length - filled_length)
         
         message += f"{persian_name}: {bar} {score:.1f}%\n"
+        current_level_progress.append(score)
     
-    message += "\nبه تمرین ادامه دهید تا پیشرفت کنید! 💪"
+    # Check if eligible for upgrade (only if no recent assessment)
+    has_recent_assessment = db.has_recent_assessment(user_id, 24)
+    
+    if level != 'advanced' and not has_recent_assessment:
+        all_above_80 = all(score >= 80 for score in current_level_progress)
+        
+        if all_above_80:
+            levels_list = ['beginner', 'amateur', 'intermediate', 'advanced']
+            next_level = levels_list[levels_list.index(level) + 1]
+            next_level_persian = levels_persian.get(next_level, next_level)
+            message += f"\n🎉 تبریک! شما آماده ارتقاء به سطح {next_level_persian} هستید!\n"
+            message += "در تمرین بعدی خودکار ارتقاء خواهید یافت."
+        else:
+            remaining_sections = [categories[cat] for cat, score in zip(categories.keys(), current_level_progress) if score < 80]
+            if remaining_sections:
+                message += f"\n📈 برای ارتقاء به سطح بعدی، باید در بخش‌های زیر به ۸۰٪ برسید:\n"
+                message += "• " + "\n• ".join(remaining_sections)
+    elif has_recent_assessment:
+        message += f"\n💡 سطح شما اخیراً بر اساس آزمون سنجش سطح تعیین شده است."
+    else:
+        message += f"\n🌟 شما در بالاترین سطح قرار دارید!"
+    
+    message += "\n\n💪 به تمرین ادامه دهید تا پیشرفت کنید!"
     
     await update.message.reply_text(message)
 
@@ -964,59 +1098,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             level = lesson_info.get('level')
             
             
-            # Check if all 5 exercises are completed
-            if exercises_completed >= 5:
-                # Calculate average score and mark lesson as completed
-                avg_score = total_score / 5
-                content_manager.mark_grammar_lesson_completed(user_id, level, topic_id, avg_score)
-                
-                # --- New Progress Calculation Logic ---
-                # Get total number of grammar lessons for the level
-                total_lessons = content_manager.get_total_grammar_count(level)
-                
-                if total_lessons > 0:
-                    # Calculate the progress increment for completing one lesson
-                    progress_increment = (1 / total_lessons) * 100
-                    
-                    # Add the calculated increment to the user's grammar progress
-                    db.add_section_progress(user_id, 'grammar', level, progress_increment)
-                # --- End of New Logic ---
-                
-                # Check for level up
-                if db.check_and_upgrade_level(user_id):
-                    await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
-                
-                # Show completion message
+            # This block is no longer needed - completion logic moved to the actual completion section above
+            
+            # Validate user input before sending to AI
+            is_valid, error_reason = validate_user_input(message)
+            if not is_valid:
                 await update.message.reply_text(
-                    f"✅ درس گرامر '{lesson_info['title']}' به پایان رسید!\n\n"
-                    f"میانگین امتیاز شما: {avg_score:.1f}/100\n\n"
-                    f"برای شروع درس بعدی، دوباره دکمه درس گرامر را بزنید."
+                    f"⚠️ {error_reason}\n\n"
+                    f"💡 لطفاً جمله معنی‌داری با استفاده از قاعده گرامری '{lesson_info['title']}' بنویسید.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 بازگشت به منوی اصلی", callback_data="main_menu")
+                    ]])
                 )
-                
-                # Reset state
-                user_states[user_id] = MAIN_MENU
-                context.user_data['current_grammar_lesson'] = {}
                 return
             
             # Process the current exercise
             logger.info(f"Calling OpenAI for GRAMMAR_LESSON exercise {exercises_completed + 1}...")
             
             # Construct prompt for AI evaluation
-            prompt = f"""You are an English grammar teacher. A student has learned this grammar rule:
+            prompt = f"""You are a strict English grammar teacher. A student is practicing the grammar lesson: "{lesson_info['title']}"
 
+Grammar rule being practiced:
 {lesson_info['content']}
 
 The student wrote this sentence: "{message}"
 
-Evaluate the student's sentence based on:
-1. Correct use of the grammar rule (60 points)
-2. Grammatical accuracy (30 points)
-3. Natural English expression (10 points)
+IMPORTANT EVALUATION RULES:
+- If the sentence contains irrelevant words, random characters, or gibberish: Score 0-25
+- If the specific grammar rule "{lesson_info['title']}" is not applied: Maximum score 40
+- If the sentence is grammatically incorrect: Deduct 30-50 points
+- Only give high scores (85+) for perfect application of the grammar rule
 
-Provide feedback in Persian, being encouraging and constructive.
-Format the score clearly at the end, e.g., Score: 85/100.
+Evaluate the student's sentence specifically based on:
+1. Correct application of "{lesson_info['title']}" grammar rule (60 points)
+2. Overall grammatical accuracy (25 points)
+3. Natural English expression (15 points)
 
-Focus on the specific grammar rule they just learned."""
+IMPORTANT: Your evaluation must focus on how well the student applied the specific grammar topic "{lesson_info['title']}" that they are currently learning.
+
+Be strict and accurate in scoring. Provide constructive feedback in Persian.
+Format the score clearly at the end, e.g., Score: 70/100."""
 
             response = openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -1025,13 +1146,31 @@ Focus on the specific grammar rule they just learned."""
             logger.info("OpenAI call successful for GRAMMAR_LESSON")
             feedback = response.choices[0].message.content
 
-            # Extract score
+            # Extract score with multiple parsing attempts
             score = 70  # Default score
             try:
-                score_part = feedback.split("Score:")[1].split("/")[0].strip()
-                score = int(score_part)
-            except Exception:
-                logger.warning("Could not parse score from OpenAI feedback.")
+                # Try different score patterns
+                import re
+                score_patterns = [
+                    r"Score:\s*(\d+)/100",
+                    r"Score:\s*(\d+)",
+                    r"نمره:\s*(\d+)",
+                    r"امتیاز:\s*(\d+)",
+                    r"(\d+)/100",
+                    r"(\d+)\s*از\s*100"
+                ]
+                
+                for pattern in score_patterns:
+                    match = re.search(pattern, feedback, re.IGNORECASE)
+                    if match:
+                        score = int(match.group(1))
+                        logger.info(f"Successfully parsed score: {score} using pattern: {pattern}")
+                        break
+                else:
+                    logger.warning(f"Could not parse score from feedback: {feedback[:200]}...")
+                    
+            except Exception as e:
+                logger.warning(f"Error parsing score: {e}")
                 pass
 
             # Update lesson progress
@@ -1041,19 +1180,69 @@ Focus on the specific grammar rule they just learned."""
             context.user_data['current_grammar_lesson']['exercises_completed'] = exercises_completed
             context.user_data['current_grammar_lesson']['total_score'] = total_score
 
-            # Show feedback and next exercise
-            if exercises_completed < 5:
-                next_message = f"{feedback}\n\n"
-                next_message += f"تمرین {exercises_completed + 1} از ۵:\n"
+            # Show individual exercise score
+            await update.message.reply_text(
+                f"📊 **نتیجه تمرین {exercises_completed}:**\n\n"
+                f"{feedback}\n\n"
+                f"🎯 **نمره این تمرین: {score}/100**"
+            )
+            
+            # Show next exercise or completion
+            if exercises_completed < 2:
+                next_message = f"تمرین {exercises_completed + 1} از ۲:\n"
                 next_message += "جمله‌ای دیگر با استفاده از همین قاعده گرامری بنویسید:"
                 await update.message.reply_text(next_message)
             else:
                 # This was the last exercise, show completion
                 await update.message.reply_text(
-                    f"{feedback}\n\n"
                     f"🎉 تمام تمرین‌های این درس به پایان رسید!\n\n"
-                    f"میانگین امتیاز شما: {total_score / 5:.1f}/100\n\n"
-                    f"درس گرامر '{lesson_info['title']}' با موفقیت تکمیل شد!"
+                    f"📊 **نمرات تمرین‌ها:**\n"
+                    f"• تمرین ۱: {(total_score - score)}/100\n"
+                    f"• تمرین ۲: {score}/100\n"
+                    f"📈 **میانگین امتیاز: {total_score / 2:.1f}/100**\n\n"
+                    f"✅ درس گرامر '{lesson_info['title']}' با موفقیت تکمیل شد!"
+                )
+                
+                # **MOVED COMPLETION LOGIC HERE** 
+                # Calculate average score and mark lesson as completed
+                avg_score = total_score / 2
+                logger.info(f"🔧 [DEBUG] Grammar lesson completed: user={user_id}, level={level}, topic_id={topic_id}, avg_score={avg_score}")
+                
+                # Mark lesson as completed
+                completion_success = content_manager.mark_grammar_lesson_completed(user_id, level, topic_id, avg_score)
+                logger.info(f"🔧 [DEBUG] Lesson completion result: {completion_success}")
+                
+                # --- New Progress Calculation Logic ---
+                # Get total number of grammar lessons for the level
+                total_lessons = content_manager.get_total_grammar_count(level)
+                logger.info(f"🔧 [DEBUG] Total lessons for {level}: {total_lessons}")
+                
+                if total_lessons > 0:
+                    # Calculate the progress increment for completing one lesson
+                    progress_increment = (1 / total_lessons) * 100
+                    logger.info(f"🔧 [DEBUG] Progress increment calculated: {progress_increment}%")
+                    
+                    # Add the calculated increment to the user's grammar progress
+                    current_progress = db.get_section_progress(user_id, 'grammar', level)
+                    logger.info(f"🔧 [DEBUG] Current grammar progress: {current_progress}%")
+                    
+                    new_progress = db.add_section_progress(user_id, 'grammar', level, progress_increment)
+                    logger.info(f"🔧 [DEBUG] New grammar progress after increment: {new_progress}%")
+                else:
+                    logger.warning(f"🔧 [DEBUG] ⚠️ Total lessons is 0 for level {level}")
+                # --- End of New Logic ---
+                
+                # Check for level up
+                if db.check_and_upgrade_level(user_id):
+                    await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
+                
+                # Reset state to main menu after completion
+                user_states[user_id] = MAIN_MENU
+                context.user_data['current_grammar_lesson'] = {}
+                
+                # Show final completion message
+                await update.message.reply_text(
+                    f"برای شروع درس بعدی، دوباره دکمه درس گرامر را بزنید."
                 )
                 
         except Exception as e:
@@ -1063,9 +1252,27 @@ Focus on the specific grammar rule they just learned."""
     elif state == CONVERSATION_PRACTICE:
         try:
             user_reply = message.strip()
-            import re
-            if not re.search(r'[a-zA-Z]', user_reply) or re.search(r'[آ-یءضصثقفغعهخحجچشسیبلاتنمکگظطزرذدپو.,!?؛،]', user_reply):
-                await update.message.reply_text("⚠️ لطفاً فقط به انگلیسی پاسخ دهید و به موضوع مکالمه توجه کنید.")
+            
+            # Validate user input before processing
+            is_valid, error_reason = validate_user_input(user_reply)
+            if not is_valid:
+                await update.message.reply_text(
+                    f"⚠️ {error_reason}\n\n"
+                    "💡 لطفاً پاسخ معنی‌داری به زبان انگلیسی ارسال کنید."
+                )
+                return
+            
+            # Check if message contains English letters (more lenient)
+            if not re.search(r'[a-zA-Z]', user_reply):
+                await update.message.reply_text("⚠️ لطفاً به انگلیسی پاسخ دهید.")
+                return
+                
+            # Check if message is predominantly Persian (more than 50% Persian characters)
+            persian_chars = len(re.findall(r'[آ-یءضصثقفغعهخحجچشسیبلاتنمکگظطزرذدپو]', user_reply))
+            total_letters = len(re.findall(r'[a-zA-Zآ-یءضصثقفغعهخحجچشسیبلاتنمکگظطزرذدپو]', user_reply))
+            
+            if total_letters > 0 and persian_chars / total_letters > 0.5:
+                await update.message.reply_text("⚠️ لطفاً فقط به انگلیسی پاسخ دهید.")
                 return
             topic = context.user_data.get('conversation_topic', '')
             level = db.get_user_level(user_id)
@@ -1077,23 +1284,44 @@ Focus on the specific grammar rule they just learned."""
             if 'conversation_ai_replies' not in context.user_data:
                 context.user_data['conversation_ai_replies'] = 0
             
-            # Limit to 4 user replies
+            # Check if conversation is complete (4 messages)
             if len(context.user_data['conversation_history']) >= 4:
                 # End session, calculate average score
                 scores = context.user_data['conversation_scores']
                 avg_score = int(sum(scores) / len(scores)) if scores else 0
                 
-                # --- New Progress Calculation Logic ---
+                # --- Progress Calculation Based on Average Score ---
                 total_topics = content_manager.get_total_conversation_count(level)
                 if total_topics > 0:
-                    # Calculate the progress increment for completing one conversation topic
-                    progress_increment = (1 / total_topics) * 100
-                    db.add_section_progress(user_id, 'conversation', level, progress_increment)
+                    # Base progress increment for completing one conversation topic
+                    base_increment = (1 / total_topics) * 100
+                    
+                    # Apply score multiplier (minimum 50% for completion, up to 100% for perfect score)
+                    score_multiplier = max(0.5, avg_score / 100)
+                    final_increment = base_increment * score_multiplier
+                    
+                    db.add_section_progress(user_id, 'conversation', level, final_increment)
+                    logger.info(f"Added conversation progress for user {user_id}: {final_increment:.2f}% (avg_score: {avg_score})")
                 # --- End of New Logic ---
                 
+                # Check for level upgrade
                 if db.check_and_upgrade_level(user_id):
                     await update.message.reply_text("🎉 تبریک! شما به سطح بعدی ارتقاء یافتید.")
-                await update.message.reply_text(f"✅ مکالمه به پایان رسید!\nمیانگین امتیاز شما: {avg_score}/100\nبرای شروع مکالمه جدید، دوباره دکمه تمرین مکالمه را بزنید.")
+                
+                # Show completion message with detailed results
+                completion_message = f"""🎯 **مکالمه تکمیل شد!**
+
+📊 **نتایج شما:**
+💬 تعداد پیام‌ها: {len(scores)}
+📈 میانگین امتیاز: {avg_score}/100
+⭐ نمرات هر پیام: {', '.join([str(s) for s in scores])}
+
+✅ پیشرفت شما در بخش مکالمه به‌روزرسانی شد!
+
+🔄 برای شروع مکالمه جدید، دوباره دکمه "🗣️ تمرین مکالمه" را بزنید."""
+                
+                await update.message.reply_text(completion_message)
+                
                 # Reset state
                 context.user_data['conversation_history'] = []
                 context.user_data['conversation_scores'] = []
@@ -1101,31 +1329,90 @@ Focus on the specific grammar rule they just learned."""
                 context.user_data['conversation_topic'] = None
                 user_states[user_id] = MAIN_MENU
                 return
-            # Score the user's reply
-            score_prompt = f"You are an English teacher. A student at the {level} level replied to the topic '{topic['title']}':\n\n'{user_reply}'\n\nGive a score out of 100 for the reply, considering grammar, fluency, and relevance to the topic. Reply only with: Score: XX/100 and a short feedback in Persian."
+            # Score and provide feedback for the user's reply
+            current_message_number = len(context.user_data['conversation_history']) + 1
+            
+            score_prompt = f"""You are a strict English teacher helping a {level}-level Iranian student practice conversation.
+
+Topic: "{topic['title']}"
+Topic Description: "{topic['description']}"
+Student's message #{current_message_number}: "{user_reply}"
+
+IMPORTANT EVALUATION RULES:
+- If the message contains irrelevant words, random characters, or gibberish: Score 0-30
+- If the message is completely off-topic: Maximum score 40
+- If there are major grammar errors: Deduct 25-40 points
+- Only give high scores (80+) for genuinely good conversational responses
+
+Please evaluate the student's response based on:
+1. Grammar accuracy and sentence structure (40 points)
+2. Vocabulary usage and appropriateness (30 points)
+3. Relevance to the conversation topic (20 points)
+4. Fluency and natural expression (10 points)
+
+Be strict and accurate in scoring. Provide constructive feedback in Persian, pointing out specific areas for improvement.
+End your response with: Score: XX/100
+
+Keep your feedback concise but helpful."""
+
             score_response = openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": score_prompt}]
             )
             score_feedback = score_response.choices[0].message.content
-            score = 70
+            
+            # Extract score with multiple parsing attempts (same as grammar)
+            score = 70  # Default score
             try:
-                score_part = score_feedback.split("Score:")[1].split("/")[0].strip()
-                score = int(score_part)
-            except Exception:
+                import re
+                score_patterns = [
+                    r"Score:\s*(\d+)/100",
+                    r"Score:\s*(\d+)",
+                    r"نمره:\s*(\d+)",
+                    r"امتیاز:\s*(\d+)",
+                    r"(\d+)/100",
+                    r"(\d+)\s*از\s*100"
+                ]
+                
+                for pattern in score_patterns:
+                    match = re.search(pattern, score_feedback, re.IGNORECASE)
+                    if match:
+                        score = int(match.group(1))
+                        logger.info(f"Successfully parsed conversation score: {score} using pattern: {pattern}")
+                        break
+                else:
+                    logger.warning(f"Could not parse score from conversation feedback: {score_feedback[:200]}...")
+                    
+            except Exception as e:
+                logger.warning(f"Error parsing conversation score: {e}")
                 pass
+            
+            # Store score and message
             context.user_data['conversation_scores'].append(score)
             context.user_data['conversation_history'].append(user_reply)
-            await update.message.reply_text(score_feedback)
-            # AI short reply (max 3 per session)
-            if context.user_data['conversation_ai_replies'] < 3:
-                ai_reply_prompt = f"You are an English teacher. The topic is '{topic['title']}'. The student said: '{user_reply}'. Reply with a short, relevant English sentence to continue the conversation."
+            
+            # Send feedback to user
+            await update.message.reply_text(f"📊 **ارزیابی پیام {current_message_number}:**\n\n{score_feedback}")
+            
+            # Generate AI response to continue the conversation
+            if current_message_number < 4:  # Only send AI reply if not the last message
+                ai_conversation_prompt = f"""You are an English teacher practicing conversation with a {level}-level Iranian student.
+
+Topic: "{topic['title']}"
+Topic Description: "{topic['description']}"
+Student's message: "{user_reply}"
+
+Respond naturally in English as if you're having a conversation about this topic. Ask a follow-up question or make a relevant comment to keep the conversation going. Keep your response appropriate for a {level} level student.
+
+Your response should be 1-2 sentences that encourage further conversation."""
+
                 ai_reply_response = openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": ai_reply_prompt}]
+                    messages=[{"role": "user", "content": ai_conversation_prompt}]
                 )
                 ai_reply = ai_reply_response.choices[0].message.content
-                await update.message.reply_text(ai_reply)
+                
+                await update.message.reply_text(f"🤖 **Teacher's Response:**\n\n{ai_reply}\n\n💬 **پیام {current_message_number + 1} خود را بنویسید:**")
                 context.user_data['conversation_ai_replies'] += 1
         except Exception as e:
             logger.error(f"Error in CONVERSATION_PRACTICE: {str(e)}", exc_info=True)

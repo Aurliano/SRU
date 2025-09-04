@@ -1,0 +1,332 @@
+{% extends "base.html" %}
+
+{% block title %}مدیریت محتوا - Admin Panel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-file-text"></i> مدیریت محتوا</h2>
+    <div>
+        <div class="btn-group">
+            <button class="btn btn-success" onclick="addContent()">
+                <i class="bi bi-plus-circle"></i> افزودن محتوا
+            </button>
+            <button class="btn btn-warning" onclick="bulkImport()">
+                <i class="bi bi-upload"></i> واردات دسته‌ای
+            </button>
+            <button class="btn btn-info" onclick="exportContent()">
+                <i class="bi bi-download"></i> صادرات محتوا
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Content Statistics -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ (content_stats.vocabulary.beginner or 0) + (content_stats.vocabulary.amateur or 0) + (content_stats.vocabulary.intermediate or 0) + (content_stats.vocabulary.advanced or 0) }}</h4>
+                        <small>کل واژگان</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-book-fill fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ (content_stats.grammar.beginner or 0) + (content_stats.grammar.amateur or 0) + (content_stats.grammar.intermediate or 0) + (content_stats.grammar.advanced or 0) }}</h4>
+                        <small>دروس گرامر</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-pencil-fill fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ (content_stats.conversation.beginner or 0) + (content_stats.conversation.amateur or 0) + (content_stats.conversation.intermediate or 0) + (content_stats.conversation.advanced or 0) }}</h4>
+                        <small>موضوعات مکالمه</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-chat-fill fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card bg-warning text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ (content_stats.assessment.beginner or 0) + (content_stats.assessment.amateur or 0) + (content_stats.assessment.intermediate or 0) + (content_stats.assessment.advanced or 0) }}</h4>
+                        <small>سوالات آزمون</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-question-circle-fill fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Content Management Tabs -->
+<div class="card">
+    <div class="card-header">
+        <ul class="nav nav-tabs card-header-tabs" id="contentTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="vocabulary-tab" data-bs-toggle="tab" data-bs-target="#vocabulary-content" type="button" role="tab">
+                    <i class="bi bi-book"></i> واژگان
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="grammar-tab" data-bs-toggle="tab" data-bs-target="#grammar-content" type="button" role="tab">
+                    <i class="bi bi-pencil"></i> گرامر
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="conversation-tab" data-bs-toggle="tab" data-bs-target="#conversation-content" type="button" role="tab">
+                    <i class="bi bi-chat"></i> مکالمه
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="assessment-tab" data-bs-toggle="tab" data-bs-target="#assessment-content" type="button" role="tab">
+                    <i class="bi bi-question-circle"></i> سوالات آزمون
+                </button>
+            </li>
+        </ul>
+    </div>
+    
+    <div class="card-body">
+        <div class="tab-content" id="contentTabsContent">
+            <!-- Vocabulary Tab -->
+            <div class="tab-pane fade show active" id="vocabulary-content" role="tabpanel">
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" placeholder="جستجو در واژگان...">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <select class="form-select">
+                            <option>همه سطوح</option>
+                            <option>مبتدی</option>
+                            <option>آماتور</option>
+                            <option>متوسط</option>
+                            <option>پیشرفته</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-primary w-100">
+                            <i class="bi bi-plus"></i> افزودن واژه جدید
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>واژه</th>
+                                <th>تعریف</th>
+                                <th>مثال</th>
+                                <th>سطح</th>
+                                <th>عملیات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">
+                                    <i class="bi bi-database fs-1"></i>
+                                    <br>
+                                    برای نمایش داده‌ها از دیتابیس استفاده کنید
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Grammar Tab -->
+            <div class="tab-pane fade" id="grammar-content" role="tabpanel">
+                <div class="row mb-3">
+                    <div class="col-md-9">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" placeholder="جستجو در دروس گرامر...">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-primary w-100">
+                            <i class="bi bi-plus"></i> افزودن درس جدید
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>عنوان درس</th>
+                                <th>سطح</th>
+                                <th>محتوا</th>
+                                <th>تاریخ ایجاد</th>
+                                <th>عملیات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">
+                                    <i class="bi bi-database fs-1"></i>
+                                    <br>
+                                    برای نمایش داده‌ها از دیتابیس استفاده کنید
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Conversation Tab -->
+            <div class="tab-pane fade" id="conversation-content" role="tabpanel">
+                <div class="row mb-3">
+                    <div class="col-md-9">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" placeholder="جستجو در موضوعات مکالمه...">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-primary w-100">
+                            <i class="bi bi-plus"></i> افزودن موضوع جدید
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>عنوان موضوع</th>
+                                <th>توضیحات</th>
+                                <th>جمله شروع</th>
+                                <th>سطح</th>
+                                <th>عملیات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">
+                                    <i class="bi bi-database fs-1"></i>
+                                    <br>
+                                    برای نمایش داده‌ها از دیتابیس استفاده کنید
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Assessment Tab -->
+            <div class="tab-pane fade" id="assessment-content" role="tabpanel">
+                <div class="row mb-3">
+                    <div class="col-md-9">
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control" placeholder="جستجو در سوالات آزمون...">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-primary w-100">
+                            <i class="bi bi-plus"></i> افزودن سوال جدید
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>سوال</th>
+                                <th>گزینه‌ها</th>
+                                <th>پاسخ صحیح</th>
+                                <th>سطح</th>
+                                <th>عملیات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">
+                                    <i class="bi bi-database fs-1"></i>
+                                    <br>
+                                    برای نمایش داده‌ها از دیتابیس استفاده کنید
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function addContent() {
+    const activeTab = document.querySelector('.nav-link.active').id;
+    const contentType = activeTab.replace('-tab', '');
+    
+    alert(`قابلیت افزودن ${getContentTypeName(contentType)} به زودی اضافه می‌شود`);
+}
+
+function bulkImport() {
+    alert('قابلیت واردات دسته‌ای به زودی اضافه می‌شود');
+}
+
+function exportContent() {
+    const activeTab = document.querySelector('.nav-link.active').id;
+    const contentType = activeTab.replace('-tab', '');
+    
+    alert(`قابلیت صادرات ${getContentTypeName(contentType)} به زودی اضافه می‌شود`);
+}
+
+function getContentTypeName(type) {
+    const names = {
+        'vocabulary': 'واژگان',
+        'grammar': 'دروس گرامر',
+        'conversation': 'موضوعات مکالمه',
+        'assessment': 'سوالات آزمون'
+    };
+    return names[type] || type;
+}
+
+function editContent(id, type) {
+    alert(`ویرایش ${type} با شناسه ${id}`);
+}
+
+function deleteContent(id, type) {
+    if (confirm('آیا مطمئن هستید که می‌خواهید این مورد را حذف کنید؟')) {
+        alert(`حذف ${type} با شناسه ${id}`);
+    }
+}
+</script>
+{% endblock %}

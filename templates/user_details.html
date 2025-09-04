@@ -1,0 +1,402 @@
+{% extends "base.html" %}
+
+{% block title %}جزئیات کاربر {{ user.user_id }} - Admin Panel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-person-circle"></i> 
+        جزئیات کاربر {{ user.username or user.user_id }}
+    </h2>
+    <div>
+        <a href="{{ url_for('users_list') }}" class="btn btn-secondary">
+            <i class="bi bi-arrow-left"></i> بازگشت به لیست
+        </a>
+        <button class="btn btn-primary" onclick="refreshData()">
+            <i class="bi bi-arrow-clockwise"></i> به‌روزرسانی
+        </button>
+    </div>
+</div>
+
+<div class="row">
+    <!-- User Info Card -->
+    <div class="col-md-4 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-info-circle"></i> اطلاعات کاربر
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="text-center mb-3">
+                    <div class="avatar-lg bg-primary text-white rounded-circle d-inline-flex align-items-center justify-content-center">
+                        <i class="bi bi-person fs-1"></i>
+                    </div>
+                </div>
+                
+                <table class="table table-borderless">
+                    <tr>
+                        <td><strong>شناسه:</strong></td>
+                        <td><code>{{ user.user_id }}</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>نام کاربری:</strong></td>
+                        <td>{{ user.username or 'تعریف نشده' }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>سطح:</strong></td>
+                        <td>
+                            {% set level_colors = {
+                                'beginner': 'danger',
+                                'amateur': 'warning',
+                                'intermediate': 'info',
+                                'advanced': 'success'
+                            } %}
+                            {% set level_names = {
+                                'beginner': 'مبتدی',
+                                'amateur': 'آماتور',
+                                'intermediate': 'متوسط',
+                                'advanced': 'پیشرفته'
+                            } %}
+                            <span class="badge bg-{{ level_colors[user.level] }}">
+                                {{ level_names[user.level] }}
+                            </span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>تاریخ عضویت:</strong></td>
+                        <td>{{ user.join_date or 'نامشخص' }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>آخرین فعالیت:</strong></td>
+                        <td>{{ user.last_active or 'نامشخص' }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>وضعیت آزمون:</strong></td>
+                        <td>
+                            {% if user.assessment_done %}
+                                <span class="badge bg-success">
+                                    <i class="bi bi-check-circle"></i> انجام شده
+                                </span>
+                            {% else %}
+                                <span class="badge bg-secondary">
+                                    <i class="bi bi-x-circle"></i> انجام نشده
+                                </span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                </table>
+
+                <div class="d-grid gap-2">
+                    <button class="btn btn-warning" onclick="sendMessage({{ user.user_id }})">
+                        <i class="bi bi-envelope"></i> ارسال پیام
+                    </button>
+                    <button class="btn btn-info" onclick="resetProgress()">
+                        <i class="bi bi-arrow-counterclockwise"></i> ریست پیشرفت
+                    </button>
+                    <button class="btn btn-danger" onclick="blockUser({{ user.user_id }})">
+                        <i class="bi bi-ban"></i> مسدود کردن
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Overview -->
+    <div class="col-md-8 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-graph-up"></i> نمای کلی پیشرفت
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="userProgressChart" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Recent Progress -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-clock-history"></i> آخرین فعالیت‌ها
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if user.progress_data %}
+                <div class="timeline">
+                    {% for progress in user.progress_data[:10] %}
+                    <div class="timeline-item">
+                        <div class="timeline-marker bg-primary"></div>
+                        <div class="timeline-content">
+                            <h6 class="mb-1">
+                                {% if progress[0] == 'vocabulary' %}
+                                    <i class="bi bi-book"></i> تمرین واژگان
+                                {% elif progress[0] == 'grammar' %}
+                                    <i class="bi bi-pencil"></i> درس گرامر
+                                {% elif progress[0] == 'conversation' %}
+                                    <i class="bi bi-chat"></i> تمرین مکالمه
+                                {% elif progress[0] == 'assessment' %}
+                                    <i class="bi bi-clipboard-check"></i> آزمون سنجش
+                                {% else %}
+                                    <i class="bi bi-activity"></i> {{ progress[0] }}
+                                {% endif %}
+                            </h6>
+                            <small class="text-muted">
+                                سطح: {{ progress[1] }} | 
+                                نمره: {{ "%.1f"|format(progress[2]) }}% | 
+                                {{ progress[3] }}
+                            </small>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-4">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <br>
+                    هیچ فعالیتی ثبت نشده
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Vocabulary Practice -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-book"></i> آخرین واژگان تمرین شده
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if user.vocabulary_data %}
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>کلمه</th>
+                                <th>نمره</th>
+                                <th>تاریخ</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for vocab in user.vocabulary_data %}
+                            <tr>
+                                <td><strong>{{ vocab[0] }}</strong></td>
+                                <td>
+                                    <span class="badge bg-{% if vocab[1] >= 80 %}success{% elif vocab[1] >= 60 %}warning{% else %}danger{% endif %}">
+                                        {{ vocab[1] }}%
+                                    </span>
+                                </td>
+                                <td><small class="text-muted">{{ vocab[2].split(' ')[0] }}</small></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-3">
+                    <i class="bi bi-book fs-1"></i>
+                    <br>
+                    هیچ واژه‌ای تمرین نشده
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Grammar Progress -->
+    <div class="col-md-12 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pencil"></i> دروس گرامر تکمیل شده
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if user.grammar_data %}
+                <div class="table-responsive">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>سطح</th>
+                                <th>شناسه درس</th>
+                                <th>نمره</th>
+                                <th>تاریخ تکمیل</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for grammar in user.grammar_data %}
+                            <tr>
+                                <td>
+                                    <span class="badge bg-info">{{ grammar[0] }}</span>
+                                </td>
+                                <td><code>{{ grammar[1] }}</code></td>
+                                <td>
+                                    <span class="badge bg-{% if grammar[2] >= 80 %}success{% elif grammar[2] >= 60 %}warning{% else %}danger{% endif %}">
+                                        {{ grammar[2] }}%
+                                    </span>
+                                </td>
+                                <td><small class="text-muted">{{ grammar[3] }}</small></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-4">
+                    <i class="bi bi-pencil fs-1"></i>
+                    <br>
+                    هیچ درس گرامری تکمیل نشده
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// User Progress Chart
+const progressCtx = document.getElementById('userProgressChart').getContext('2d');
+const progressData = {{ user.progress_data | tojson }};
+
+// Group progress data by section and get latest score for each
+const sectionProgress = {};
+progressData.forEach(item => {
+    const section = item[0];
+    const score = item[2];
+    if (!sectionProgress[section] || sectionProgress[section] < score) {
+        sectionProgress[section] = score;
+    }
+});
+
+new Chart(progressCtx, {
+    type: 'bar',
+    data: {
+        labels: ['واژگان', 'گرامر', 'مکالمه', 'آزمون'],
+        datasets: [{
+            label: 'پیشرفت (%)',
+            data: [
+                sectionProgress.vocabulary || 0,
+                sectionProgress.grammar || 0,
+                sectionProgress.conversation || 0,
+                sectionProgress.assessment || 0
+            ],
+            backgroundColor: [
+                'rgba(255, 99, 132, 0.8)',
+                'rgba(54, 162, 235, 0.8)',
+                'rgba(255, 205, 86, 0.8)',
+                'rgba(75, 192, 192, 0.8)'
+            ],
+            borderColor: [
+                'rgba(255, 99, 132, 1)',
+                'rgba(54, 162, 235, 1)',
+                'rgba(255, 205, 86, 1)',
+                'rgba(75, 192, 192, 1)'
+            ],
+            borderWidth: 1
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: {
+                beginAtZero: true,
+                max: 100,
+                ticks: {
+                    callback: function(value) {
+                        return value + '%';
+                    }
+                }
+            }
+        },
+        plugins: {
+            legend: {
+                position: 'bottom'
+            }
+        }
+    }
+});
+
+function refreshData() {
+    location.reload();
+}
+
+function sendMessage(userId) {
+    const message = prompt('متن پیام را وارد کنید:');
+    if (message && message.trim()) {
+        // Implement message sending
+        alert('قابلیت ارسال پیام به زودی اضافه می‌شود');
+    }
+}
+
+function resetProgress() {
+    if (confirm('آیا مطمئن هستید که می‌خواهید پیشرفت کاربر را ریست کنید؟')) {
+        // Implement progress reset
+        alert('قابلیت ریست پیشرفت به زودی اضافه می‌شود');
+    }
+}
+
+function blockUser(userId) {
+    if (confirm('آیا مطمئن هستید که می‌خواهید این کاربر را مسدود کنید؟')) {
+        // Implement user blocking
+        alert('قابلیت مسدود کردن کاربر به زودی اضافه می‌شود');
+    }
+}
+</script>
+
+<style>
+.avatar-lg {
+    width: 80px;
+    height: 80px;
+    font-size: 2rem;
+}
+
+.timeline {
+    position: relative;
+    padding-left: 30px;
+}
+
+.timeline-item {
+    position: relative;
+    margin-bottom: 20px;
+}
+
+.timeline-marker {
+    position: absolute;
+    left: -35px;
+    top: 5px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+.timeline-item:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: -31px;
+    top: 15px;
+    height: calc(100% + 10px);
+    width: 2px;
+    background-color: #dee2e6;
+}
+
+.timeline-content {
+    background: #f8f9fa;
+    padding: 10px 15px;
+    border-radius: 5px;
+    border-left: 3px solid #0d6efd;
+}
+</style>
+{% endblock %}

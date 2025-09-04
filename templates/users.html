@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+
+{% block title %}مدیریت کاربران - Admin Panel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-people"></i> مدیریت کاربران</h2>
+    <div>
+        <button class="btn btn-success" onclick="exportUsers()">
+            <i class="bi bi-download"></i> صادرات کاربران
+        </button>
+    </div>
+</div>
+
+<!-- Search and Filter -->
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4">
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" id="searchUsers" placeholder="جستجو در کاربران...">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <select class="form-select" id="levelFilter">
+                    <option value="">همه سطوح</option>
+                    <option value="beginner">مبتدی</option>
+                    <option value="amateur">آماتور</option>
+                    <option value="intermediate">متوسط</option>
+                    <option value="advanced">پیشرفته</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <select class="form-select" id="statusFilter">
+                    <option value="">همه کاربران</option>
+                    <option value="active">فعال</option>
+                    <option value="inactive">غیرفعال</option>
+                    <option value="assessed">آزمون داده</option>
+                    <option value="not_assessed">آزمون نداده</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-primary w-100" onclick="applyFilters()">
+                    <i class="bi bi-funnel"></i> اعمال فیلتر
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Users Table -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="card-title mb-0">لیست کاربران</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>شناسه کاربر</th>
+                        <th>نام کاربری</th>
+                        <th>سطح</th>
+                        <th>تاریخ عضویت</th>
+                        <th>آخرین فعالیت</th>
+                        <th>وضعیت آزمون</th>
+                        <th>عملیات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>
+                            <code>{{ user.user_id }}</code>
+                        </td>
+                        <td>
+                            <div class="d-flex align-items-center">
+                                <div class="avatar-sm bg-primary text-white rounded-circle d-flex align-items-center justify-content-center me-2">
+                                    {{ user.username[0] if user.username else 'U' }}
+                                </div>
+                                {{ user.username or 'کاربر' + user.user_id|string }}
+                            </div>
+                        </td>
+                        <td>
+                            {% set level_colors = {
+                                'beginner': 'danger',
+                                'amateur': 'warning',
+                                'intermediate': 'info',
+                                'advanced': 'success'
+                            } %}
+                            {% set level_names = {
+                                'beginner': 'مبتدی',
+                                'amateur': 'آماتور',
+                                'intermediate': 'متوسط',
+                                'advanced': 'پیشرفته'
+                            } %}
+                            <span class="badge bg-{{ level_colors[user.level] }}">
+                                {{ level_names[user.level] }}
+                            </span>
+                        </td>
+                        <td>
+                            <small class="text-muted">
+                                {{ user.join_date.split(' ')[0] if user.join_date else 'نامشخص' }}
+                            </small>
+                        </td>
+                        <td>
+                            <small class="text-muted">
+                                {{ user.last_active.split(' ')[0] if user.last_active else 'نامشخص' }}
+                            </small>
+                        </td>
+                        <td>
+                            {% if user.assessment_done %}
+                                <span class="badge bg-success">
+                                    <i class="bi bi-check-circle"></i> انجام شده
+                                </span>
+                            {% else %}
+                                <span class="badge bg-secondary">
+                                    <i class="bi bi-x-circle"></i> انجام نشده
+                                </span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ url_for('user_details', user_id=user.user_id) }}" 
+                                   class="btn btn-outline-primary" title="جزئیات">
+                                    <i class="bi bi-eye"></i>
+                                </a>
+                                <button class="btn btn-outline-warning" 
+                                        onclick="sendMessage({{ user.user_id }})" title="ارسال پیام">
+                                    <i class="bi bi-envelope"></i>
+                                </button>
+                                <button class="btn btn-outline-danger" 
+                                        onclick="blockUser({{ user.user_id }})" title="مسدود کردن">
+                                    <i class="bi bi-ban"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-4">
+                            <i class="bi bi-person-x fs-1"></i>
+                            <br>
+                            کاربری یافت نشد
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if users %}
+        <nav aria-label="صفحه‌بندی کاربران">
+            <ul class="pagination justify-content-center">
+                <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                    <a class="page-link" href="{{ url_for('users_list', page=page-1) if page > 1 else '#' }}">قبلی</a>
+                </li>
+                
+                {% for p in range(max(1, page-2), min(page+3, page+5)) %}
+                <li class="page-item {% if p == page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('users_list', page=p) }}">{{ p }}</a>
+                </li>
+                {% endfor %}
+                
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('users_list', page=page+1) }}">بعدی</a>
+                </li>
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Send Message Modal -->
+<div class="modal fade" id="messageModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">ارسال پیام به کاربر</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="messageForm">
+                    <input type="hidden" id="targetUserId">
+                    <div class="mb-3">
+                        <label for="messageText" class="form-label">متن پیام:</label>
+                        <textarea class="form-control" id="messageText" rows="4" required></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">انصراف</button>
+                <button type="button" class="btn btn-primary" onclick="sendMessageSubmit()">ارسال پیام</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applyFilters() {
+    const search = document.getElementById('searchUsers').value;
+    const level = document.getElementById('levelFilter').value;
+    const status = document.getElementById('statusFilter').value;
+    
+    // Implement filtering logic
+    console.log('Applying filters:', { search, level, status });
+    // This would typically make an AJAX request or reload the page with filters
+}
+
+function exportUsers() {
+    // Implement user export functionality
+    alert('قابلیت صادرات کاربران به زودی اضافه می‌شود');
+}
+
+function sendMessage(userId) {
+    document.getElementById('targetUserId').value = userId;
+    const modal = new bootstrap.Modal(document.getElementById('messageModal'));
+    modal.show();
+}
+
+function sendMessageSubmit() {
+    const userId = document.getElementById('targetUserId').value;
+    const message = document.getElementById('messageText').value;
+    
+    if (!message.trim()) {
+        alert('لطفاً متن پیام را وارد کنید');
+        return;
+    }
+    
+    // Implement message sending logic
+    console.log('Sending message to user:', userId, 'Message:', message);
+    alert('قابلیت ارسال پیام به زودی اضافه می‌شود');
+    
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('messageModal'));
+    modal.hide();
+    
+    // Clear form
+    document.getElementById('messageText').value = '';
+}
+
+function blockUser(userId) {
+    if (confirm('آیا مطمئن هستید که می‌خواهید این کاربر را مسدود کنید؟')) {
+        // Implement user blocking logic
+        console.log('Blocking user:', userId);
+        alert('قابلیت مسدود کردن کاربر به زودی اضافه می‌شود');
+    }
+}
+
+// Real-time search
+document.getElementById('searchUsers').addEventListener('input', function() {
+    const searchTerm = this.value.toLowerCase();
+    const rows = document.querySelectorAll('tbody tr');
+    
+    rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(searchTerm) ? '' : 'none';
+    });
+});
+</script>
+{% endblock %}

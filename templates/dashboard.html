@@ -1,0 +1,378 @@
+{% extends "base.html" %}
+
+{% block title %}داشبورد - Admin Panel{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Stats Cards -->
+    <div class="col-md-3 mb-4">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ user_stats.total_users or 0 }}</h4>
+                        <small>کل کاربران</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-people-fill fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3 mb-4">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ user_stats.active_users or 0 }}</h4>
+                        <small>کاربران فعال (۷ روز)</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-activity fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3 mb-4">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ user_stats.assessed_users or 0 }}</h4>
+                        <small>آزمون داده‌اند</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-clipboard-check fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3 mb-4">
+        <div class="card bg-warning text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-grow-1">
+                        <h4 class="mb-0">{{ "%.0f"|format((user_stats.avg_progress.vocabulary or 0)) }}%</h4>
+                        <small>میانگین پیشرفت</small>
+                    </div>
+                    <div class="ms-3">
+                        <i class="bi bi-graph-up fs-1"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Users by Level Chart -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-bar-chart"></i>
+                    توزیع کاربران بر اساس سطح
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="usersByLevelChart" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress by Section Chart -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pie-chart"></i>
+                    میانگین پیشرفت بر اساس بخش
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="progressChart" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Content Statistics -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-file-text"></i>
+                    آمار محتوا
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>نوع محتوا</th>
+                                <th>مبتدی</th>
+                                <th>آماتور</th>
+                                <th>متوسط</th>
+                                <th>پیشرفته</th>
+                                <th>کل</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><i class="bi bi-book"></i> واژگان</td>
+                                <td>{{ content_stats.vocabulary.beginner or 0 }}</td>
+                                <td>{{ content_stats.vocabulary.amateur or 0 }}</td>
+                                <td>{{ content_stats.vocabulary.intermediate or 0 }}</td>
+                                <td>{{ content_stats.vocabulary.advanced or 0 }}</td>
+                                <td><strong>{{ (content_stats.vocabulary.beginner or 0) + (content_stats.vocabulary.amateur or 0) + (content_stats.vocabulary.intermediate or 0) + (content_stats.vocabulary.advanced or 0) }}</strong></td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-pencil"></i> گرامر</td>
+                                <td>{{ content_stats.grammar.beginner or 0 }}</td>
+                                <td>{{ content_stats.grammar.amateur or 0 }}</td>
+                                <td>{{ content_stats.grammar.intermediate or 0 }}</td>
+                                <td>{{ content_stats.grammar.advanced or 0 }}</td>
+                                <td><strong>{{ (content_stats.grammar.beginner or 0) + (content_stats.grammar.amateur or 0) + (content_stats.grammar.intermediate or 0) + (content_stats.grammar.advanced or 0) }}</strong></td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-chat"></i> مکالمه</td>
+                                <td>{{ content_stats.conversation.beginner or 0 }}</td>
+                                <td>{{ content_stats.conversation.amateur or 0 }}</td>
+                                <td>{{ content_stats.conversation.intermediate or 0 }}</td>
+                                <td>{{ content_stats.conversation.advanced or 0 }}</td>
+                                <td><strong>{{ (content_stats.conversation.beginner or 0) + (content_stats.conversation.amateur or 0) + (content_stats.conversation.intermediate or 0) + (content_stats.conversation.advanced or 0) }}</strong></td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-question-circle"></i> سوالات آزمون</td>
+                                <td>{{ content_stats.assessment.beginner or 0 }}</td>
+                                <td>{{ content_stats.assessment.amateur or 0 }}</td>
+                                <td>{{ content_stats.assessment.intermediate or 0 }}</td>
+                                <td>{{ content_stats.assessment.advanced or 0 }}</td>
+                                <td><strong>{{ (content_stats.assessment.beginner or 0) + (content_stats.assessment.amateur or 0) + (content_stats.assessment.intermediate or 0) + (content_stats.assessment.advanced or 0) }}</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-clock-history"></i>
+                    فعالیت اخیر (۳۰ روز گذشته)
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="dailyActivityChart" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-lightning"></i>
+                    اقدامات سریع
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3 mb-2">
+                        <a href="{{ url_for('users_list') }}" class="btn btn-primary w-100">
+                            <i class="bi bi-people"></i> مدیریت کاربران
+                        </a>
+                    </div>
+                    <div class="col-md-3 mb-2">
+                        <a href="{{ url_for('content_management') }}" class="btn btn-success w-100">
+                            <i class="bi bi-file-text"></i> مدیریت محتوا
+                        </a>
+                    </div>
+                    <div class="col-md-3 mb-2">
+                        <a href="{{ url_for('analytics') }}" class="btn btn-info w-100">
+                            <i class="bi bi-graph-up"></i> آنالیتیکس تفصیلی
+                        </a>
+                    </div>
+                    <div class="col-md-3 mb-2">
+                        <button class="btn btn-warning w-100" onclick="exportData()">
+                            <i class="bi bi-download"></i> صادرات داده‌ها
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Users by Level Chart
+const usersByLevelCtx = document.getElementById('usersByLevelChart').getContext('2d');
+const usersByLevelData = {{ user_stats.users_by_level | tojson }};
+
+new Chart(usersByLevelCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['مبتدی', 'آماتور', 'متوسط', 'پیشرفته'],
+        datasets: [{
+            data: [
+                usersByLevelData.beginner || 0,
+                usersByLevelData.amateur || 0,
+                usersByLevelData.intermediate || 0,
+                usersByLevelData.advanced || 0
+            ],
+            backgroundColor: [
+                '#e74c3c',
+                '#f39c12',
+                '#3498db',
+                '#2ecc71'
+            ]
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: 'bottom'
+            }
+        }
+    }
+});
+
+// Progress by Section Chart
+const progressCtx = document.getElementById('progressChart').getContext('2d');
+const progressData = {{ user_stats.avg_progress | tojson }};
+
+new Chart(progressCtx, {
+    type: 'radar',
+    data: {
+        labels: ['واژگان', 'گرامر', 'مکالمه'],
+        datasets: [{
+            label: 'میانگین پیشرفت (%)',
+            data: [
+                progressData.vocabulary || 0,
+                progressData.grammar || 0,
+                progressData.conversation || 0
+            ],
+            backgroundColor: 'rgba(52, 152, 219, 0.2)',
+            borderColor: 'rgba(52, 152, 219, 1)',
+            pointBackgroundColor: 'rgba(52, 152, 219, 1)',
+            pointBorderColor: '#fff',
+            pointHoverBackgroundColor: '#fff',
+            pointHoverBorderColor: 'rgba(52, 152, 219, 1)'
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            r: {
+                min: 0,
+                max: 100,
+                ticks: {
+                    stepSize: 20
+                }
+            }
+        },
+        plugins: {
+            legend: {
+                position: 'bottom'
+            }
+        }
+    }
+});
+
+// Daily Activity Chart
+const dailyActivityCtx = document.getElementById('dailyActivityChart').getContext('2d');
+const usageData = {{ usage_analytics | tojson }};
+
+const dailyUserData = usageData.daily_users || [];
+const dailyProgressData = usageData.daily_progress || [];
+
+new Chart(dailyActivityCtx, {
+    type: 'line',
+    data: {
+        labels: dailyUserData.map(item => item[0]),
+        datasets: [{
+            label: 'کاربران فعال',
+            data: dailyUserData.map(item => item[1]),
+            borderColor: 'rgb(75, 192, 192)',
+            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+            tension: 0.1
+        }, {
+            label: 'فعالیت‌ها',
+            data: dailyProgressData.map(item => item[1]),
+            borderColor: 'rgb(255, 99, 132)',
+            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+            tension: 0.1,
+            yAxisID: 'y1'
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+            mode: 'index',
+            intersect: false,
+        },
+        scales: {
+            x: {
+                display: true,
+                title: {
+                    display: true,
+                    text: 'تاریخ'
+                }
+            },
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                title: {
+                    display: true,
+                    text: 'کاربران فعال'
+                }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                title: {
+                    display: true,
+                    text: 'تعداد فعالیت‌ها'
+                },
+                grid: {
+                    drawOnChartArea: false,
+                },
+            }
+        },
+        plugins: {
+            legend: {
+                position: 'bottom'
+            }
+        }
+    }
+});
+
+function exportData() {
+    // Implement data export functionality
+    alert('قابلیت صادرات داده‌ها به زودی اضافه می‌شود');
+}
+</script>
+{% endblock %}

@@ -228,7 +228,7 @@ class UserDatabase:
         progress = {}
         for section in ['vocabulary', 'grammar', 'conversation', 'assessment']:
             progress[section] = {}
-            for level in ['beginner', 'amatثur', 'intermediate', 'advanced']:
+            for level in ['beginner', 'amateur', 'intermediate', 'advanced']:
                 progress[section][level] = self.get_section_progress(user_id, section, level)
         return progress
 
@@ -258,16 +258,54 @@ class UserDatabase:
         """If all 3 sections for current level are >=80, upgrade user to next level and return True if upgraded."""
         current_level = self.get_user_level(user_id)
         levels = ['beginner', 'amateur', 'intermediate', 'advanced']
+        
+        # If user is already at advanced level, no upgrade possible
         if current_level == 'advanced':
             return False
+        
+        # Check if user has completed assessment recently (within last 24 hours)
+        # If so, don't auto-upgrade based on progress to avoid conflicts
+        try:
+            recent_assessment = self.cursor.execute(
+                """
+                SELECT score, date FROM progress 
+                WHERE user_id = ? AND section = 'assessment' 
+                AND datetime(date) > datetime('now', '-1 day')
+                ORDER BY date DESC LIMIT 1
+                """, (user_id,)
+            ).fetchone()
+            
+            if recent_assessment:
+                # User has recent assessment, let that determine their level
+                return False
+        except Exception:
+            # If there's an error checking assessment, continue with normal upgrade logic
+            pass
+        
+        # Check progress in all 3 sections for current level
         idx = levels.index(current_level)
         for section in ['vocabulary', 'grammar', 'conversation']:
             if self.get_section_progress(user_id, section, current_level) < 80:
                 return False
-        # Upgrade
+        
+        # All sections are >= 80%, upgrade to next level
         new_level = levels[idx+1]
-        self.update_user_level(user_id, new_level)
-        return True
+        success = self.update_user_level(user_id, new_level)
+        
+        if success:
+            # Log the automatic upgrade
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.cursor.execute(
+                    "INSERT INTO progress (user_id, section, level, score, date) VALUES (?, ?, ?, ?, ?)",
+                    (user_id, "auto_upgrade", new_level, 100, now)
+                )
+                self.conn.commit()
+            except Exception:
+                # If logging fails, don't prevent the upgrade
+                pass
+        
+        return success
     
     def get_users_with_notifications(self):
         """Get all users who have notifications enabled."""
@@ -310,20 +348,37 @@ class UserDatabase:
             
             if result:
                 score = result[0]
-                # Determine level based on score
+                # Determine level based on score (matching new scoring system)
                 level = "beginner"
-                if score >= 80:
+                if score > 81:
                     level = "advanced"
-                elif score >= 60:
+                elif score >= 50:
                     level = "intermediate"
-                elif score >= 40:
-                    level = "amatثur"
+                elif score >= 25:
+                    level = "amateur"
                 return level, score
             else:
                 return None, None
         except Exception as e:
             print(f"Error getting latest assessment result: {e}")
             return None, None
+    
+    def has_recent_assessment(self, user_id, hours=24):
+        """Check if user has completed assessment within the specified hours."""
+        try:
+            self.cursor.execute(
+                """
+                SELECT COUNT(*) FROM progress 
+                WHERE user_id = ? AND section = 'assessment' 
+                AND datetime(date) > datetime('now', '-{} hour')
+                """.format(hours),
+                (user_id,)
+            )
+            count = self.cursor.fetchone()[0]
+            return count > 0
+        except Exception as e:
+            print(f"Error checking recent assessment: {e}")
+            return False
     
     def debug_database(self, user_id):
         """Comprehensive database diagnostic."""

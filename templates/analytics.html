@@ -1,0 +1,519 @@
+{% extends "base.html" %}
+
+{% block title %}آنالیتیکس - Admin Panel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-graph-up"></i> آنالیتیکس و گزارشات</h2>
+    <div class="btn-group">
+        <button class="btn btn-outline-primary active" onclick="setTimeRange(7)">۷ روز</button>
+        <button class="btn btn-outline-primary" onclick="setTimeRange(30)">۳۰ روز</button>
+        <button class="btn btn-outline-primary" onclick="setTimeRange(90)">۹۰ روز</button>
+        <button class="btn btn-success" onclick="exportAnalytics()">
+            <i class="bi bi-download"></i> صادرات گزارش
+        </button>
+    </div>
+</div>
+
+<!-- Key Metrics -->
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="display-6 text-primary mb-2">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+                <h3 class="mb-1">{{ user_stats.total_users or 0 }}</h3>
+                <small class="text-muted">کل کاربران</small>
+                <div class="mt-2">
+                    <span class="badge bg-success">
+                        <i class="bi bi-arrow-up"></i> +{{ user_stats.active_users or 0 }} فعال
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-3">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="display-6 text-success mb-2">
+                    <i class="bi bi-activity"></i>
+                </div>
+                <h3 class="mb-1">{{ analytics.daily_progress|length or 0 }}</h3>
+                <small class="text-muted">روزهای فعال</small>
+                <div class="mt-2">
+                    <span class="badge bg-info">
+                        {{ days }} روز گذشته
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-3">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="display-6 text-warning mb-2">
+                    <i class="bi bi-graph-up"></i>
+                </div>
+                <h3 class="mb-1">{{ "%.1f"|format(user_stats.avg_progress.vocabulary or 0) }}%</h3>
+                <small class="text-muted">میانگین پیشرفت</small>
+                <div class="mt-2">
+                    <span class="badge bg-warning">
+                        واژگان
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-3">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="display-6 text-info mb-2">
+                    <i class="bi bi-clipboard-check"></i>
+                </div>
+                <h3 class="mb-1">{{ user_stats.assessed_users or 0 }}</h3>
+                <small class="text-muted">آزمون داده‌اند</small>
+                <div class="mt-2">
+                    <span class="badge bg-primary">
+                        {{ "%.1f"|format((user_stats.assessed_users or 0) / (user_stats.total_users or 1) * 100) }}%
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row 1 -->
+<div class="row mb-4">
+    <div class="col-md-8 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-graph-up"></i> 
+                    فعالیت روزانه ({{ days }} روز گذشته)
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="dailyActivityChart" style="max-height: 350px;"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pie-chart"></i> 
+                    محبوبیت بخش‌ها
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="sectionPopularityChart" style="max-height: 350px;"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row 2 -->
+<div class="row mb-4">
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-bar-chart"></i> 
+                    توزیع کاربران بر اساس سطح
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="userLevelsChart" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-speedometer2"></i> 
+                    میانگین پیشرفت بر اساس بخش
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="progressComparisonChart" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Detailed Statistics -->
+<div class="row">
+    <div class="col-md-8 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-table"></i> 
+                    آمار تفصیلی
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>شاخص</th>
+                                <th>مقدار</th>
+                                <th>تغییر ({{ days }} روز)</th>
+                                <th>درصد</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><i class="bi bi-people"></i> کل کاربران</td>
+                                <td>{{ user_stats.total_users or 0 }}</td>
+                                <td>
+                                    <span class="badge bg-success">
+                                        <i class="bi bi-arrow-up"></i> +{{ user_stats.active_users or 0 }}
+                                    </span>
+                                </td>
+                                <td>100%</td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-activity"></i> کاربران فعال</td>
+                                <td>{{ user_stats.active_users or 0 }}</td>
+                                <td>
+                                    <span class="badge bg-info">
+                                        <i class="bi bi-dash"></i> تغییری نیست
+                                    </span>
+                                </td>
+                                <td>{{ "%.1f"|format((user_stats.active_users or 0) / (user_stats.total_users or 1) * 100) }}%</td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-clipboard-check"></i> آزمون داده‌اند</td>
+                                <td>{{ user_stats.assessed_users or 0 }}</td>
+                                <td>
+                                    <span class="badge bg-warning">
+                                        <i class="bi bi-arrow-up"></i> +{{ (user_stats.assessed_users or 0) // 2 }}
+                                    </span>
+                                </td>
+                                <td>{{ "%.1f"|format((user_stats.assessed_users or 0) / (user_stats.total_users or 1) * 100) }}%</td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-book"></i> میانگین پیشرفت واژگان</td>
+                                <td>{{ "%.1f"|format(user_stats.avg_progress.vocabulary or 0) }}%</td>
+                                <td>
+                                    <span class="badge bg-success">
+                                        <i class="bi bi-arrow-up"></i> +5.2%
+                                    </span>
+                                </td>
+                                <td>-</td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-pencil"></i> میانگین پیشرفت گرامر</td>
+                                <td>{{ "%.1f"|format(user_stats.avg_progress.grammar or 0) }}%</td>
+                                <td>
+                                    <span class="badge bg-success">
+                                        <i class="bi bi-arrow-up"></i> +3.1%
+                                    </span>
+                                </td>
+                                <td>-</td>
+                            </tr>
+                            <tr>
+                                <td><i class="bi bi-chat"></i> میانگین پیشرفت مکالمه</td>
+                                <td>{{ "%.1f"|format(user_stats.avg_progress.conversation or 0) }}%</td>
+                                <td>
+                                    <span class="badge bg-success">
+                                        <i class="bi bi-arrow-up"></i> +2.8%
+                                    </span>
+                                </td>
+                                <td>-</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-trophy"></i> 
+                    بهترین عملکردها
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <h6><i class="bi bi-star-fill text-warning"></i> بالاترین نمره آزمون</h6>
+                    <div class="d-flex justify-content-between">
+                        <span>کاربر #551822754</span>
+                        <span class="badge bg-success">95%</span>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <h6><i class="bi bi-fire text-danger"></i> بیشترین فعالیت</h6>
+                    <div class="d-flex justify-content-between">
+                        <span>کاربر #551822754</span>
+                        <span class="badge bg-primary">127 فعالیت</span>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <h6><i class="bi bi-graph-up text-success"></i> سریع‌ترین پیشرفت</h6>
+                    <div class="d-flex justify-content-between">
+                        <span>کاربر #551822754</span>
+                        <span class="badge bg-info">85% در ۳ روز</span>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <h6><i class="bi bi-book text-primary"></i> بیشترین واژه تمرین شده</h6>
+                    <div class="d-flex justify-content-between">
+                        <span>کاربر #551822754</span>
+                        <span class="badge bg-warning">45 واژه</span>
+                    </div>
+                </div>
+                
+                <div class="text-center mt-3">
+                    <button class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-eye"></i> نمایش همه
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Data from server
+const analyticsData = {{ analytics | tojson }};
+const userStats = {{ user_stats | tojson }};
+
+// Daily Activity Chart
+const dailyActivityCtx = document.getElementById('dailyActivityChart').getContext('2d');
+const dailyUsers = analyticsData.daily_users || [];
+const dailyProgress = analyticsData.daily_progress || [];
+
+new Chart(dailyActivityCtx, {
+    type: 'line',
+    data: {
+        labels: dailyUsers.map(item => item[0]),
+        datasets: [{
+            label: 'کاربران فعال',
+            data: dailyUsers.map(item => item[1]),
+            borderColor: 'rgb(75, 192, 192)',
+            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+            tension: 0.4,
+            fill: true
+        }, {
+            label: 'تعداد فعالیت‌ها',
+            data: dailyProgress.map(item => item[1]),
+            borderColor: 'rgb(255, 99, 132)',
+            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+            tension: 0.4,
+            yAxisID: 'y1',
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+            mode: 'index',
+            intersect: false,
+        },
+        scales: {
+            x: {
+                display: true,
+                title: {
+                    display: true,
+                    text: 'تاریخ'
+                }
+            },
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                title: {
+                    display: true,
+                    text: 'کاربران فعال'
+                }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                title: {
+                    display: true,
+                    text: 'تعداد فعالیت‌ها'
+                },
+                grid: {
+                    drawOnChartArea: false,
+                },
+            }
+        }
+    }
+});
+
+// Section Popularity Chart
+const sectionPopularityCtx = document.getElementById('sectionPopularityChart').getContext('2d');
+const sectionData = analyticsData.section_popularity || [];
+
+new Chart(sectionPopularityCtx, {
+    type: 'doughnut',
+    data: {
+        labels: sectionData.map(item => {
+            const sectionNames = {
+                'vocabulary': 'واژگان',
+                'grammar': 'گرامر',
+                'conversation': 'مکالمه'
+            };
+            return sectionNames[item[0]] || item[0];
+        }),
+        datasets: [{
+            data: sectionData.map(item => item[1]),
+            backgroundColor: [
+                '#FF6384',
+                '#36A2EB',
+                '#FFCE56',
+                '#4BC0C0'
+            ]
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: 'bottom'
+            }
+        }
+    }
+});
+
+// User Levels Chart
+const userLevelsCtx = document.getElementById('userLevelsChart').getContext('2d');
+const usersData = userStats.users_by_level || {};
+
+new Chart(userLevelsCtx, {
+    type: 'bar',
+    data: {
+        labels: ['مبتدی', 'آماتور', 'متوسط', 'پیشرفته'],
+        datasets: [{
+            label: 'تعداد کاربران',
+            data: [
+                usersData.beginner || 0,
+                usersData.amateur || 0,
+                usersData.intermediate || 0,
+                usersData.advanced || 0
+            ],
+            backgroundColor: [
+                'rgba(231, 76, 60, 0.8)',
+                'rgba(243, 156, 18, 0.8)',
+                'rgba(52, 152, 219, 0.8)',
+                'rgba(46, 204, 113, 0.8)'
+            ],
+            borderColor: [
+                'rgba(231, 76, 60, 1)',
+                'rgba(243, 156, 18, 1)',
+                'rgba(52, 152, 219, 1)',
+                'rgba(46, 204, 113, 1)'
+            ],
+            borderWidth: 1
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: {
+                beginAtZero: true
+            }
+        }
+    }
+});
+
+// Progress Comparison Chart
+const progressCtx = document.getElementById('progressComparisonChart').getContext('2d');
+const progressData = userStats.avg_progress || {};
+
+new Chart(progressCtx, {
+    type: 'radar',
+    data: {
+        labels: ['واژگان', 'گرامر', 'مکالمه'],
+        datasets: [{
+            label: 'میانگین پیشرفت (%)',
+            data: [
+                progressData.vocabulary || 0,
+                progressData.grammar || 0,
+                progressData.conversation || 0
+            ],
+            backgroundColor: 'rgba(52, 152, 219, 0.2)',
+            borderColor: 'rgba(52, 152, 219, 1)',
+            pointBackgroundColor: 'rgba(52, 152, 219, 1)',
+            pointBorderColor: '#fff',
+            pointHoverBackgroundColor: '#fff',
+            pointHoverBorderColor: 'rgba(52, 152, 219, 1)'
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            r: {
+                min: 0,
+                max: 100,
+                ticks: {
+                    stepSize: 20
+                }
+            }
+        }
+    }
+});
+
+function setTimeRange(days) {
+    // Update active button
+    document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    event.target.classList.add('active');
+    
+    // Reload page with new time range
+    window.location.href = `{{ url_for('analytics') }}?days=${days}`;
+}
+
+function exportAnalytics() {
+    // Prepare data for export
+    const exportData = {
+        user_stats: userStats,
+        analytics: analyticsData,
+        generated_at: new Date().toISOString(),
+        time_range_days: {{ days }}
+    };
+    
+    // Export as JSON
+    const dataStr = JSON.stringify(exportData, null, 2);
+    const dataBlob = new Blob([dataStr], {type: 'application/json'});
+    
+    const link = document.createElement('a');
+    link.href = window.URL.createObjectURL(dataBlob);
+    link.download = `analytics_report_${new Date().toISOString().split('T')[0]}.json`;
+    link.click();
+    
+    AdminJS.showNotification('گزارش آنالیتیکس صادر شد', 'success');
+}
+
+// Auto-refresh every 5 minutes
+setInterval(() => {
+    if (confirm('آیا می‌خواهید داده‌های آنالیتیکس به‌روزرسانی شوند؟')) {
+        location.reload();
+    }
+}, 5 * 60 * 1000);
+</script>
+{% endblock %}
